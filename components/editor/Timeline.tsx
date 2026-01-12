@@ -22,70 +22,77 @@ export default function Timeline() {
   
   const [isScrubbing, setIsScrubbing] = useState(false);
 
-  // --- GESTION DE LA SUPPRESSION (CLAVIER) ---
+  // --- CONFIGURATION SNAPPING ---
+  const SNAP_THRESHOLD = 10 / zoomLevel; // 10 pixels de tolérance
+
+  const getSnappedPosition = (pos: number, excludeId?: string) => {
+    let bestPos = pos;
+    let minDiff = SNAP_THRESHOLD;
+
+    // Points d'aimant possibles : tête de lecture + début/fin de tous les autres clips
+    const snapPoints = [currentTime];
+    clips.forEach(c => {
+      if (c.id !== excludeId) {
+        snapPoints.push(c.start);
+        snapPoints.push(c.start + c.width);
+      }
+    });
+
+    snapPoints.forEach(point => {
+      const diff = Math.abs(pos - point);
+      if (diff < minDiff) {
+        minDiff = diff;
+        bestPos = point;
+      }
+    });
+    return bestPos;
+  };
+
+  // --- GESTION DE LA SUPPRESSION ---
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      // On vérifie qu'on n'est pas dans un champ de texte
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
-
       if ((e.key === 'Delete' || e.key === 'Backspace') && selectedClipId) {
         setClips(prev => prev.filter(c => c.id !== selectedClipId));
         setSelectedClipId(null);
       }
     };
-
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [selectedClipId, setClips, setSelectedClipId]);
 
-  // --- FORCE LE BLOCAGE DU ZOOM CHROME ---
+  // --- BLOCAGE ZOOM CHROME ---
   useEffect(() => {
     const el = timelineRef.current;
     if (!el) return;
-
     const handleWheelNative = (e: WheelEvent) => {
       if (e.ctrlKey || e.metaKey) {
         e.preventDefault();
         e.stopPropagation();
-
-        const zoomSpeed = 0.001;
-        const delta = -e.deltaY * zoomSpeed;
-
-        setZoomLevel(prev => {
-          const nextZoom = prev + delta;
-          return Math.min(Math.max(0.1, nextZoom), 10);
-        });
+        const delta = -e.deltaY * 0.001;
+        setZoomLevel(prev => Math.min(Math.max(0.1, prev + delta), 10));
       }
     };
-
     el.addEventListener('wheel', handleWheelNative, { passive: false });
     return () => el.removeEventListener('wheel', handleWheelNative);
   }, [setZoomLevel]);
 
-  // --- LOGIQUE DE COUPE (CUTTER) ---
+  // --- LOGIQUE DE COUPE ---
   const handleClipClick = (e: ReactMouseEvent, clip: Clip) => {
     if (activeTool !== 'cut') return;
     e.stopPropagation();
     const rect = e.currentTarget.getBoundingClientRect();
     const cutPointX = (e.clientX - rect.left) / zoomLevel; 
-
     const clipA: Clip = { ...clip, width: cutPointX, id: `${clip.id}_p1_${Date.now()}` };
-    const clipB: Clip = { 
-      ...clip, 
-      id: `${clip.id}_p2_${Date.now()}`, 
-      start: clip.start + cutPointX, 
-      width: clip.width - cutPointX 
-    };
-
+    const clipB: Clip = { ...clip, id: `${clip.id}_p2_${Date.now()}`, start: clip.start + cutPointX, width: clip.width - cutPointX };
     setClips(prev => [...prev.filter(c => c.id !== clip.id), clipA, clipB]);
-    setSelectedClipId(null); // On désélectionne après une coupe
+    setSelectedClipId(null);
   };
 
-  // --- LOGIQUE DE TRIMMING ---
+  // --- LOGIQUE DE TRIMMING AVEC SNAP ---
   const handleTrim = (e: ReactMouseEvent, clip: Clip, edge: 'start' | 'end') => {
     if (activeTool !== 'select') return;
-    e.stopPropagation();
-    e.preventDefault();
+    e.stopPropagation(); e.preventDefault();
     const startX = e.clientX;
     const initialWidth = clip.width;
     const initialStart = clip.start;
@@ -95,15 +102,15 @@ export default function Timeline() {
       setClips(prev => prev.map(c => {
         if (c.id !== clip.id) return c;
         if (edge === 'end') {
-          return { ...c, width: Math.max(5, initialWidth + deltaX) };
+          const newEnd = getSnappedPosition(initialStart + initialWidth + deltaX, clip.id);
+          return { ...c, width: Math.max(5, newEnd - initialStart) };
         } else {
-          const newStart = initialStart + deltaX;
-          const newWidth = initialWidth - deltaX;
+          const newStart = getSnappedPosition(initialStart + deltaX, clip.id);
+          const newWidth = initialStart + initialWidth - newStart;
           return newWidth > 5 ? { ...c, start: newStart, width: newWidth } : c;
         }
       }));
     };
-
     const onMouseUp = () => {
       document.removeEventListener('mousemove', onMouseMove);
       document.removeEventListener('mouseup', onMouseUp);
@@ -112,28 +119,21 @@ export default function Timeline() {
     document.addEventListener('mouseup', onMouseUp);
   };
 
-  // --- LOGIQUE DE SCRUBBING ---
+  // --- SCRUBBING ---
   const handleMouseDown = (e: ReactMouseEvent) => {
     if (e.button !== 0) return;
-    
-    // Si on clique sur le fond (pas un clip), on désélectionne
-    if (e.target === e.currentTarget) {
-        setSelectedClipId(null);
-    }
-
+    if (e.target === e.currentTarget) setSelectedClipId(null);
     setIsScrubbing(true);
     updateTimeFromMouse(e.clientX);
     document.addEventListener('mousemove', handleMouseMoveGlobal);
     document.addEventListener('mouseup', handleMouseUpGlobal);
   };
-
   const handleMouseMoveGlobal = (e: MouseEvent) => updateTimeFromMouse(e.clientX);
   const handleMouseUpGlobal = () => {
     setIsScrubbing(false);
     document.removeEventListener('mousemove', handleMouseMoveGlobal);
     document.removeEventListener('mouseup', handleMouseUpGlobal);
   };
-
   const updateTimeFromMouse = (clientX: number) => {
     if (!timelineRef.current) return;
     const rect = timelineRef.current.getBoundingClientRect();
@@ -141,12 +141,10 @@ export default function Timeline() {
     setCurrentTime(Math.max(0, x));
   };
 
-  // --- DRAG & DROP ---
+  // --- DRAG & DROP AVEC SNAP ---
   const handleDragOver = (e: DragEvent<HTMLDivElement>) => {
-    e.preventDefault();
-    e.dataTransfer.dropEffect = "copy";
+    e.preventDefault(); e.dataTransfer.dropEffect = "copy";
   };
-
   const handleDrop = (e: DragEvent<HTMLDivElement>) => {
     e.preventDefault();
     if (!timelineRef.current) return;
@@ -156,19 +154,21 @@ export default function Timeline() {
     if (!dataString) return;
     const data = JSON.parse(dataString);
 
+    // Application du magnétisme sur la position de drop
+    const snappedStart = getSnappedPosition(dropX, data.isNew ? undefined : data.id);
+
     if (data.isNew) {
       const newClip: Clip = {
         id: `clip_${Date.now()}`,
         name: data.name,
         type: data.type.startsWith('video') ? 'video' : data.type.startsWith('audio') ? 'audio' : 'image',
         track: data.type.startsWith('audio') ? 2 : 1, 
-        start: Math.max(0, dropX),
-        width: 150,
-        src: data.src
+        start: Math.max(0, snappedStart),
+        width: 150, src: data.src
       };
       setClips(prev => [...prev, newClip]);
     } else {
-      setClips(prev => prev.map(c => c.id === data.id ? { ...c, start: Math.max(0, dropX) } : c));
+      setClips(prev => prev.map(c => c.id === data.id ? { ...c, start: Math.max(0, snappedStart) } : c));
     }
   };
 
@@ -184,11 +184,8 @@ export default function Timeline() {
       <div 
         ref={timelineRef} 
         className={`timeline-container flex-1 overflow-x-auto overflow-y-hidden relative custom-scrollbar ${isScrubbing ? 'cursor-grabbing' : 'cursor-default'}`}
-        onDragOver={handleDragOver}
-        onDrop={handleDrop}
-        onMouseDown={handleMouseDown}
+        onDragOver={handleDragOver} onDrop={handleDrop} onMouseDown={handleMouseDown}
       >
-        {/* RÈGLE */}
         <div className="h-6 bg-gray-950 sticky top-0 border-b border-gray-800 flex items-end z-30 min-w-[10000px]">
           {Array.from({ length: 200 }).map((_, i) => (
              <div key={i} className="absolute border-l border-gray-700 h-2 pl-1 text-[10px] text-gray-500" style={{ left: i * 100 * zoomLevel }}>
@@ -197,7 +194,6 @@ export default function Timeline() {
           ))}
         </div>
 
-        {/* TÊTE DE LECTURE */}
         <div 
           className="absolute top-0 bottom-0 w-4 -ml-2 z-50 cursor-ew-resize flex justify-center group"
           style={{ left: `${currentTime * zoomLevel}px` }}
@@ -207,7 +203,6 @@ export default function Timeline() {
            <div className="absolute top-0 w-3 h-3 bg-red-500 rotate-45 -mt-1.5 transform group-hover:scale-125 transition-transform"></div>
         </div>
 
-        {/* PISTES */}
         {[1, 2].map(trackIndex => (
           (trackIndex === 1 && currentView !== 'video') ? null : (
             <div key={trackIndex} className="h-24 bg-gray-900/50 border-b border-gray-800 relative my-1 min-w-[10000px]">
@@ -228,9 +223,7 @@ export default function Timeline() {
                   onMouseDown={(e) => e.stopPropagation()}
                   onClick={(e) => {
                     e.stopPropagation();
-                    if (activeTool === 'select') {
-                        setSelectedClipId(clip.id);
-                    }
+                    if (activeTool === 'select') setSelectedClipId(clip.id);
                     handleClipClick(e, clip);
                   }}
                 >

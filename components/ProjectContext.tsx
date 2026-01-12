@@ -1,6 +1,6 @@
 "use client";
 
-import { createContext, useContext, useState, useEffect, ReactNode, Dispatch, SetStateAction } from 'react';
+import { createContext, useContext, useState, useEffect, useRef, ReactNode, Dispatch, SetStateAction } from 'react';
 
 // --- INTERFACES ---
 export interface Clip {
@@ -29,7 +29,6 @@ interface ProjectSettings {
   fps: number;
 }
 
-// --- TYPES DU CONTEXTE ---
 interface ProjectContextType {
   isPlaying: boolean;
   togglePlay: () => void;
@@ -47,8 +46,6 @@ interface ProjectContextType {
   setActiveTool: (tool: ToolMode) => void;
   zoomLevel: number;
   setZoomLevel: Dispatch<SetStateAction<number>>;
-
-  // NOUVEAU : Sélection du clip pour suppression
   selectedClipId: string | null;
   setSelectedClipId: Dispatch<SetStateAction<string | null>>;
 }
@@ -63,8 +60,6 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
   const [currentView, setCurrentView] = useState<ViewMode>('video');
   const [activeTool, setActiveTool] = useState<ToolMode>('select');
   const [zoomLevel, setZoomLevel] = useState(1);
-
-  // NOUVEAU : État pour le clip sélectionné
   const [selectedClipId, setSelectedClipId] = useState<string | null>(null);
 
   // --- CONFIGURATION ---
@@ -95,14 +90,37 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
   // --- ACTIONS ---
   const togglePlay = () => setIsPlaying(!isPlaying);
 
+  // --- NOUVEAU MOTEUR DE LECTURE FLUIDE (Raf / RequestAnimationFrame) ---
+  const requestRef = useRef<number | null>(null);
+  const lastTimeRef = useRef<number | null>(null);
+
   useEffect(() => {
-    let interval: NodeJS.Timeout;
+    const animate = (time: number) => {
+      if (lastTimeRef.current !== null) {
+        const deltaTime = time - lastTimeRef.current;
+        
+        // Calcul de l'avancement : 
+        // deltaTime (ms) / 1000 = secondes écoulées
+        // secondes * PX_PER_SEC_BASE = pixels parcourus
+        const secondsPassed = deltaTime / 1000;
+        const pixelsToAdvance = secondsPassed * PX_PER_SEC_BASE;
+
+        setCurrentTime((prev) => prev + pixelsToAdvance);
+      }
+      lastTimeRef.current = time;
+      requestRef.current = requestAnimationFrame(animate);
+    };
+
     if (isPlaying) {
-      interval = setInterval(() => { 
-        setCurrentTime((prev) => prev + 1); 
-      }, 33); 
+      requestRef.current = requestAnimationFrame(animate);
+    } else {
+      if (requestRef.current) cancelAnimationFrame(requestRef.current);
+      lastTimeRef.current = null;
     }
-    return () => clearInterval(interval);
+
+    return () => {
+      if (requestRef.current) cancelAnimationFrame(requestRef.current);
+    };
   }, [isPlaying]);
 
   return (
@@ -123,7 +141,6 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
       setActiveTool,
       zoomLevel,
       setZoomLevel,
-      // NOUVEAU
       selectedClipId,
       setSelectedClipId
     }}>
