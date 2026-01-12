@@ -70,13 +70,13 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
   ]);
 
   // --- MOTEUR DE LECTURE HAUTE PRÉCISION ---
-  const requestRef = useRef<number>();
+  // ✅ CORRECTION : Initialisation avec 'null' pour éviter l'erreur de build TypeScript
+  const requestRef = useRef<number | null>(null);
   const startTimeRef = useRef<number>(0);
   const baseTimeRef = useRef<number>(0);
 
   const togglePlay = () => {
     if (!isPlaying) {
-      // On mémorise le temps de départ pour le calcul différentiel
       startTimeRef.current = performance.now();
       baseTimeRef.current = currentTime;
     }
@@ -86,7 +86,6 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     const update = (now: number) => {
       if (isPlaying) {
-        // Calcul précis : (Temps Actuel - Temps au clic Play) / 1000 = secondes écoulées
         const elapsedSeconds = (now - startTimeRef.current) / 1000;
         const newTime = baseTimeRef.current + (elapsedSeconds * PX_PER_SEC_BASE);
         
@@ -97,6 +96,9 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
 
     if (isPlaying) {
       requestRef.current = requestAnimationFrame(update);
+    } else {
+        // Nettoyage si on met en pause
+        if (requestRef.current) cancelAnimationFrame(requestRef.current);
     }
 
     return () => {
