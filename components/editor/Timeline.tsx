@@ -17,19 +17,19 @@ export default function Timeline() {
     zoomLevel, 
     setZoomLevel,
     selectedClipId,
-    setSelectedClipId 
+    setSelectedClipId,
+    isPlaying
   } = useProject();
   
   const [isScrubbing, setIsScrubbing] = useState(false);
 
   // --- CONFIGURATION SNAPPING ---
-  const SNAP_THRESHOLD = 10 / zoomLevel; // 10 pixels de tolérance
+  const SNAP_THRESHOLD = 10 / zoomLevel;
 
   const getSnappedPosition = (pos: number, excludeId?: string) => {
     let bestPos = pos;
     let minDiff = SNAP_THRESHOLD;
 
-    // Points d'aimant possibles : tête de lecture + début/fin de tous les autres clips
     const snapPoints = [currentTime];
     clips.forEach(c => {
       if (c.id !== excludeId) {
@@ -89,7 +89,7 @@ export default function Timeline() {
     setSelectedClipId(null);
   };
 
-  // --- LOGIQUE DE TRIMMING AVEC SNAP ---
+  // --- LOGIQUE DE TRIMMING ---
   const handleTrim = (e: ReactMouseEvent, clip: Clip, edge: 'start' | 'end') => {
     if (activeTool !== 'select') return;
     e.stopPropagation(); e.preventDefault();
@@ -141,7 +141,7 @@ export default function Timeline() {
     setCurrentTime(Math.max(0, x));
   };
 
-  // --- DRAG & DROP AVEC SNAP ---
+  // --- DRAG & DROP ---
   const handleDragOver = (e: DragEvent<HTMLDivElement>) => {
     e.preventDefault(); e.dataTransfer.dropEffect = "copy";
   };
@@ -154,7 +154,6 @@ export default function Timeline() {
     if (!dataString) return;
     const data = JSON.parse(dataString);
 
-    // Application du magnétisme sur la position de drop
     const snappedStart = getSnappedPosition(dropX, data.isNew ? undefined : data.id);
 
     if (data.isNew) {
@@ -186,6 +185,7 @@ export default function Timeline() {
         className={`timeline-container flex-1 overflow-x-auto overflow-y-hidden relative custom-scrollbar ${isScrubbing ? 'cursor-grabbing' : 'cursor-default'}`}
         onDragOver={handleDragOver} onDrop={handleDrop} onMouseDown={handleMouseDown}
       >
+        {/* RÈGLE */}
         <div className="h-6 bg-gray-950 sticky top-0 border-b border-gray-800 flex items-end z-30 min-w-[10000px]">
           {Array.from({ length: 200 }).map((_, i) => (
              <div key={i} className="absolute border-l border-gray-700 h-2 pl-1 text-[10px] text-gray-500" style={{ left: i * 100 * zoomLevel }}>
@@ -194,15 +194,21 @@ export default function Timeline() {
           ))}
         </div>
 
+        {/* TÊTE DE LECTURE OPTIMISÉE (GPU) */}
         <div 
           className="absolute top-0 bottom-0 w-4 -ml-2 z-50 cursor-ew-resize flex justify-center group"
-          style={{ left: `${currentTime * zoomLevel}px` }}
+          style={{ 
+            transform: `translateX(${currentTime * zoomLevel}px)`,
+            willChange: 'transform',
+            transition: isPlaying ? 'none' : 'transform 0.1s ease-out'
+          }}
           onMouseDown={(e) => { e.stopPropagation(); handleMouseDown(e); }}
         >
            <div className="w-px h-full bg-red-500 shadow-[0_0_10px_rgba(239,68,68,0.5)]"></div>
            <div className="absolute top-0 w-3 h-3 bg-red-500 rotate-45 -mt-1.5 transform group-hover:scale-125 transition-transform"></div>
         </div>
 
+        {/* PISTES */}
         {[1, 2].map(trackIndex => (
           (trackIndex === 1 && currentView !== 'video') ? null : (
             <div key={trackIndex} className="h-24 bg-gray-900/50 border-b border-gray-800 relative my-1 min-w-[10000px]">
