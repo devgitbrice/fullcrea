@@ -6,6 +6,7 @@ import { createContext, useContext, useState, useEffect, useRef, ReactNode, Disp
 export interface ImageTransform {
   rotationX: number;
   rotationY: number;
+  rotationZ: number; // Rotation classique autour du centre
   scaleX: number;
   scaleY: number;
   positionX: number;
@@ -15,6 +16,7 @@ export interface ImageTransform {
 export const defaultImageTransform: ImageTransform = {
   rotationX: 0,
   rotationY: 0,
+  rotationZ: 0,
   scaleX: 1,
   scaleY: 1,
   positionX: 0,
@@ -24,13 +26,18 @@ export const defaultImageTransform: ImageTransform = {
 export interface Clip {
   id: string;
   name: string;
-  type: 'video' | 'audio' | 'image';
-  track: 1 | 2;
+  type: 'video' | 'audio' | 'image' | 'text';
+  track: number;
   start: number;
   width: number;
   src: string;
   // Propriétés de transformation pour les images
   transform?: ImageTransform;
+  // Propriétés pour les clips texte
+  text?: string;
+  fontSize?: number;
+  fontFamily?: string;
+  textColor?: string;
 }
 
 export interface Asset {
@@ -41,7 +48,13 @@ export interface Asset {
 }
 
 export type ViewMode = 'video' | 'podcast' | 'music';
-export type ToolMode = 'select' | 'cut';
+export type ToolMode = 'select' | 'cut' | 'text';
+
+export interface Track {
+  id: number;
+  type: 'video' | 'audio';
+  name: string;
+}
 
 interface ProjectSettings {
   width: number;
@@ -62,6 +75,8 @@ interface ProjectContextType {
   subscribeToTime: (callback: TimeSubscriber) => () => void;
   clips: Clip[];
   setClips: Dispatch<SetStateAction<Clip[]>>;
+  tracks: Track[];
+  addTrack: (type: 'video' | 'audio') => void;
   previewAsset: Asset | null;
   setPreviewAsset: (asset: Asset | null) => void;
   scale: number;
@@ -94,6 +109,23 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     { id: 'asset_1', name: 'rush_vacances.mp4', type: 'video', track: 1, start: 100, width: 250, src: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4' },
     { id: 'asset_2', name: 'background_loop.mp3', type: 'audio', track: 2, start: 400, width: 300, src: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3' }
   ]);
+
+  const [tracks, setTracks] = useState<Track[]>([
+    { id: 1, type: 'video', name: 'Video 1' },
+    { id: 2, type: 'audio', name: 'Audio 1' }
+  ]);
+
+  const addTrack = useCallback((type: 'video' | 'audio') => {
+    setTracks(prev => {
+      const maxId = Math.max(...prev.map(t => t.id), 0);
+      const count = prev.filter(t => t.type === type).length + 1;
+      return [...prev, {
+        id: maxId + 1,
+        type,
+        name: `${type === 'video' ? 'Video' : 'Audio'} ${count}`
+      }];
+    });
+  }, []);
 
   // --- MOTEUR DE LECTURE HAUTE PRÉCISION (OPTIMISÉ) ---
   const requestRef = useRef<number | null>(null);
@@ -172,6 +204,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
       isPlaying, togglePlay, currentTime, setCurrentTime,
       currentTimeRef, subscribeToTime,
       clips, setClips,
+      tracks, addTrack,
       previewAsset, setPreviewAsset, scale: PX_PER_SEC_BASE * zoomLevel,
       projectSettings, currentView, setCurrentView, activeTool, setActiveTool,
       zoomLevel, setZoomLevel, selectedClipId, setSelectedClipId

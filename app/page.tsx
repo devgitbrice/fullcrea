@@ -8,6 +8,7 @@ import PreviewModal from '@/components/PreviewModal';
 import ProjectHeader from '@/components/editor/ProjectHeader';
 import ViewSelector from '@/components/editor/ViewSelector';
 import ImagePropertyPanel from '@/components/editor/ImagePropertyPanel';
+import TextPropertyPanel from '@/components/editor/TextPropertyPanel';
 import { ProjectProvider, useProject } from '@/components/ProjectContext';
 
 function EditorLayout() {
@@ -53,6 +54,7 @@ function EditorLayout() {
                     <Player />
                   </div>
                   <ImagePropertyPanel />
+                  <TextPropertyPanel />
                 </div>
               </div>
               <div className="flex-1 bg-gray-950 z-0 min-h-0">

@@ -1,7 +1,8 @@
 "use client";
 
+import { useState } from 'react';
 import { useProject, ImageTransform, defaultImageTransform } from '@/components/ProjectContext';
-import { RotateCw, Move, Maximize2, RotateCcw } from 'lucide-react';
+import { RotateCw, Move, Maximize2, RotateCcw, Lock, Unlock } from 'lucide-react';
 
 interface SliderControlProps {
   label: string;
@@ -35,6 +36,7 @@ function SliderControl({ label, value, onChange, min, max, step = 1, unit = '' }
 
 export default function ImagePropertyPanel() {
   const { clips, setClips, selectedClipId } = useProject();
+  const [lockRatio, setLockRatio] = useState(true);
 
   const selectedClip = clips.find(c => c.id === selectedClipId);
   const isImageSelected = selectedClip && selectedClip.type === 'image';
@@ -48,10 +50,36 @@ export default function ImagePropertyPanel() {
   const updateTransform = (key: keyof ImageTransform, value: number) => {
     setClips(prev => prev.map(c => {
       if (c.id !== selectedClipId) return c;
+      const currentTransform = c.transform || defaultImageTransform;
+
+      // Si le ratio est verrouillé et qu'on modifie l'échelle
+      if (lockRatio && (key === 'scaleX' || key === 'scaleY')) {
+        const ratio = currentTransform.scaleX / currentTransform.scaleY;
+        if (key === 'scaleX') {
+          return {
+            ...c,
+            transform: {
+              ...currentTransform,
+              scaleX: value,
+              scaleY: value / ratio
+            }
+          };
+        } else {
+          return {
+            ...c,
+            transform: {
+              ...currentTransform,
+              scaleX: value * ratio,
+              scaleY: value
+            }
+          };
+        }
+      }
+
       return {
         ...c,
         transform: {
-          ...(c.transform || defaultImageTransform),
+          ...currentTransform,
           [key]: value
         }
       };
@@ -118,9 +146,18 @@ export default function ImagePropertyPanel() {
 
         {/* Scale */}
         <div className="space-y-3">
-          <div className="flex items-center gap-2 text-purple-400">
-            <Maximize2 size={14} />
-            <span className="text-xs font-semibold uppercase tracking-wider">Échelle</span>
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2 text-purple-400">
+              <Maximize2 size={14} />
+              <span className="text-xs font-semibold uppercase tracking-wider">Échelle</span>
+            </div>
+            <button
+              onClick={() => setLockRatio(!lockRatio)}
+              className={`p-1 rounded transition-all ${lockRatio ? 'bg-purple-600 text-white' : 'bg-gray-700 text-gray-400 hover:text-white'}`}
+              title={lockRatio ? 'Ratio verrouillé' : 'Ratio libre'}
+            >
+              {lockRatio ? <Lock size={12} /> : <Unlock size={12} />}
+            </button>
           </div>
           <div className="space-y-3 pl-1">
             <SliderControl
@@ -142,6 +179,9 @@ export default function ImagePropertyPanel() {
               unit="x"
             />
           </div>
+          {lockRatio && (
+            <p className="text-[10px] text-purple-400/60 pl-1">Ratio hauteur/largeur verrouillé</p>
+          )}
         </div>
 
         {/* Rotation */}
@@ -152,23 +192,37 @@ export default function ImagePropertyPanel() {
           </div>
           <div className="space-y-3 pl-1">
             <SliderControl
-              label="X"
-              value={transform.rotationX}
-              onChange={(v) => updateTransform('rotationX', v)}
+              label="Angle (autour du centre)"
+              value={transform.rotationZ || 0}
+              onChange={(v) => updateTransform('rotationZ', v)}
               min={-180}
               max={180}
               step={1}
               unit="°"
             />
-            <SliderControl
-              label="Y"
-              value={transform.rotationY}
-              onChange={(v) => updateTransform('rotationY', v)}
-              min={-180}
-              max={180}
-              step={1}
-              unit="°"
-            />
+            <div className="border-t border-gray-700 pt-2 mt-2">
+              <p className="text-[10px] text-gray-500 mb-2">Rotation 3D</p>
+              <SliderControl
+                label="Inclinaison X"
+                value={transform.rotationX}
+                onChange={(v) => updateTransform('rotationX', v)}
+                min={-180}
+                max={180}
+                step={1}
+                unit="°"
+              />
+              <div className="mt-2">
+                <SliderControl
+                  label="Inclinaison Y"
+                  value={transform.rotationY}
+                  onChange={(v) => updateTransform('rotationY', v)}
+                  min={-180}
+                  max={180}
+                  step={1}
+                  unit="°"
+                />
+              </div>
+            </div>
           </div>
         </div>
       </div>

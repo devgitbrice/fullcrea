@@ -1,7 +1,7 @@
 "use client";
 
 import { useRef, DragEvent, useState, useEffect, MouseEvent as ReactMouseEvent, useCallback, useMemo } from 'react';
-import { Music } from 'lucide-react';
+import { Music, Plus, Video, AudioLines, Type } from 'lucide-react';
 import { useProject, Clip } from '@/components/ProjectContext';
 import TimelineToolbar from './TimelineToolbar';
 
@@ -17,13 +17,16 @@ export default function Timeline() {
     setCurrentTime,
     currentView,
     activeTool,
+    setActiveTool,
     zoomLevel,
     setZoomLevel,
     selectedClipId,
     setSelectedClipId,
     isPlaying,
     subscribeToTime,
-    currentTimeRef
+    currentTimeRef,
+    tracks,
+    addTrack
   } = useProject();
 
   const [isScrubbing, setIsScrubbing] = useState(false);
@@ -169,10 +172,47 @@ export default function Timeline() {
     document.addEventListener('mouseup', onMouseUp);
   };
 
+  // --- CRÉATION CLIP TEXTE ---
+  const handleAddTextClip = (clientX: number) => {
+    if (!timelineRef.current) return;
+    const rect = timelineRef.current.getBoundingClientRect();
+    const x = ((clientX - rect.left) + timelineRef.current.scrollLeft) / zoomLevel;
+    const snappedStart = getSnappedPosition(x);
+
+    // Trouver la première piste vidéo disponible
+    const videoTrack = tracks.find(t => t.type === 'video');
+    if (!videoTrack) return;
+
+    const newClip: Clip = {
+      id: `text_${Date.now()}`,
+      name: 'Nouveau texte',
+      type: 'text',
+      track: videoTrack.id,
+      start: Math.max(0, snappedStart),
+      width: 150,
+      src: '',
+      text: 'Votre texte ici',
+      fontSize: 48,
+      fontFamily: 'Arial',
+      textColor: '#ffffff'
+    };
+
+    setClips(prev => [...prev, newClip]);
+    setSelectedClipId(newClip.id);
+    setActiveTool('select'); // Revenir à l'outil sélection
+  };
+
   // --- SCRUBBING ---
   const handleMouseDown = (e: ReactMouseEvent) => {
     if (e.button !== 0) return;
     if (draggingClip) return; // Ne pas scrub si on drag un clip
+
+    // Si l'outil texte est actif, créer un clip texte
+    if (activeTool === 'text') {
+      handleAddTextClip(e.clientX);
+      return;
+    }
+
     if (e.target === e.currentTarget) setSelectedClipId(null);
     setIsScrubbing(true);
     updateTimeFromMouse(e.clientX);
@@ -226,8 +266,15 @@ export default function Timeline() {
   const getClipStyle = useCallback((type: string) => {
     if (type === 'audio') return "bg-green-600/40 border-green-500 text-green-100";
     if (type === 'image') return "bg-purple-600/40 border-purple-500 text-purple-100";
+    if (type === 'text') return "bg-yellow-600/40 border-yellow-500 text-yellow-100";
     return "bg-blue-600/40 border-blue-500 text-blue-100";
   }, []);
+
+  // Filtrer les pistes selon le mode
+  const visibleTracks = useMemo(() => {
+    if (currentView === 'video') return tracks;
+    return tracks.filter(t => t.type === 'audio');
+  }, [tracks, currentView]);
 
   // ✅ Mémoriser les marques de la règle (ne change qu'avec zoomLevel)
   const rulerMarks = useMemo(() => {
@@ -270,47 +317,68 @@ export default function Timeline() {
         </div>
 
         {/* PISTES */}
-        {[1, 2].map(trackIndex => (
-          (trackIndex === 1 && currentView !== 'video') ? null : (
-            <div key={trackIndex} className="h-24 bg-gray-900/50 border-b border-gray-800 relative my-1 min-w-[10000px]">
-              <div className="absolute top-0 bottom-0 left-0 w-20 bg-gray-800 border-r border-gray-700 z-40 sticky left-0 flex items-center justify-center text-[10px] font-bold uppercase tracking-tighter text-gray-500">
-                {trackIndex === 1 ? 'Video' : 'Audio'}
-              </div>
-              {clips.filter(c => c.track === trackIndex).map(clip => (
-                <div
-                  key={clip.id}
-                  className={`absolute top-2 bottom-2 rounded border overflow-hidden flex items-center px-2 text-xs group transition-all duration-150
-                    ${getClipStyle(clip.type)}
-                    ${activeTool === 'cut' ? 'cursor-crosshair' : 'cursor-grab active:cursor-grabbing'}
-                    ${selectedClipId === clip.id ? 'ring-2 ring-white border-white z-20 shadow-[0_0_15px_rgba(255,255,255,0.3)]' : 'hover:shadow-lg hover:shadow-white/5'}
-                    ${draggingClip?.id === clip.id ? 'opacity-80 z-30' : ''}
-                  `}
-                  style={{ left: `${clip.start * zoomLevel}px`, width: `${clip.width * zoomLevel}px` }}
-                  onMouseDown={(e) => {
-                    e.stopPropagation();
-                    if (activeTool === 'select') {
-                      handleClipDragStart(e, clip);
-                    }
-                  }}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    if (activeTool === 'select') setSelectedClipId(clip.id);
-                    handleClipClick(e, clip);
-                  }}
-                >
-                  {activeTool === 'select' && (
-                    <>
-                      <div className="absolute left-0 top-0 bottom-0 w-2 cursor-ew-resize hover:bg-white/30 z-10" onMouseDown={(e) => handleTrim(e, clip, 'start')} />
-                      <div className="absolute right-0 top-0 bottom-0 w-2 cursor-ew-resize hover:bg-white/30 z-10" onMouseDown={(e) => handleTrim(e, clip, 'end')} />
-                    </>
-                  )}
-                  {clip.type === 'audio' && <Music size={12} className="mr-2 shrink-0 opacity-50" />}
-                  <span className="truncate">{clip.name}</span>
-                </div>
-              ))}
+        {visibleTracks.map(track => (
+          <div key={track.id} className="h-24 bg-gray-900/50 border-b border-gray-800 relative my-1 min-w-[10000px]">
+            <div className={`absolute top-0 bottom-0 left-0 w-20 border-r border-gray-700 z-40 sticky left-0 flex items-center justify-center text-[10px] font-bold uppercase tracking-tighter ${track.type === 'video' ? 'bg-blue-900/30 text-blue-400' : 'bg-green-900/30 text-green-400'}`}>
+              {track.name}
             </div>
-          )
+            {clips.filter(c => c.track === track.id).map(clip => (
+              <div
+                key={clip.id}
+                className={`absolute top-2 bottom-2 rounded border overflow-hidden flex items-center px-2 text-xs group transition-all duration-150
+                  ${getClipStyle(clip.type)}
+                  ${activeTool === 'cut' ? 'cursor-crosshair' : 'cursor-grab active:cursor-grabbing'}
+                  ${selectedClipId === clip.id ? 'ring-2 ring-white border-white z-20 shadow-[0_0_15px_rgba(255,255,255,0.3)]' : 'hover:shadow-lg hover:shadow-white/5'}
+                  ${draggingClip?.id === clip.id ? 'opacity-80 z-30' : ''}
+                `}
+                style={{ left: `${clip.start * zoomLevel}px`, width: `${clip.width * zoomLevel}px` }}
+                onMouseDown={(e) => {
+                  e.stopPropagation();
+                  if (activeTool === 'select') {
+                    handleClipDragStart(e, clip);
+                  }
+                }}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  if (activeTool === 'select') setSelectedClipId(clip.id);
+                  handleClipClick(e, clip);
+                }}
+              >
+                {activeTool === 'select' && (
+                  <>
+                    <div className="absolute left-0 top-0 bottom-0 w-2 cursor-ew-resize hover:bg-white/30 z-10" onMouseDown={(e) => handleTrim(e, clip, 'start')} />
+                    <div className="absolute right-0 top-0 bottom-0 w-2 cursor-ew-resize hover:bg-white/30 z-10" onMouseDown={(e) => handleTrim(e, clip, 'end')} />
+                  </>
+                )}
+                {clip.type === 'audio' && <Music size={12} className="mr-2 shrink-0 opacity-50" />}
+                {clip.type === 'text' && <Type size={12} className="mr-2 shrink-0 opacity-50" />}
+                <span className="truncate">{clip.name}</span>
+              </div>
+            ))}
+          </div>
         ))}
+
+        {/* Boutons d'ajout de pistes */}
+        <div className="flex items-center gap-2 p-2 min-w-[10000px]">
+          <button
+            onClick={() => addTrack('video')}
+            className="flex items-center gap-1 px-3 py-1.5 text-xs bg-blue-600/20 hover:bg-blue-600/40 text-blue-400 rounded border border-blue-600/30 transition-all"
+            title="Ajouter une piste vidéo"
+          >
+            <Plus size={14} />
+            <Video size={14} />
+            <span>Piste Vidéo</span>
+          </button>
+          <button
+            onClick={() => addTrack('audio')}
+            className="flex items-center gap-1 px-3 py-1.5 text-xs bg-green-600/20 hover:bg-green-600/40 text-green-400 rounded border border-green-600/30 transition-all"
+            title="Ajouter une piste audio"
+          >
+            <Plus size={14} />
+            <AudioLines size={14} />
+            <span>Piste Audio</span>
+          </button>
+        </div>
       </div>
     </div>
   );
