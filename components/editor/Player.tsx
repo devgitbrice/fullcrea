@@ -2,7 +2,7 @@
 
 import { useRef, useEffect, useMemo, useCallback, useState } from 'react';
 import { Play, Pause, SkipBack, SkipForward, Video, Music, AlertCircle } from 'lucide-react';
-import { useProject, Clip } from '@/components/ProjectContext';
+import { useProject, Clip, defaultImageTransform } from '@/components/ProjectContext';
 
 export default function Player() {
   const { isPlaying, togglePlay, currentTime, clips, setCurrentTime, scale, currentView, subscribeToTime, currentTimeRef } = useProject();
@@ -126,11 +126,27 @@ export default function Player() {
                         muted={false} 
                     />
                     ) : (
-                    <img 
-                        src={activeVideoClip.src} 
-                        alt={activeVideoClip.name} 
-                        className="w-full h-full object-contain"
-                    />
+                    (() => {
+                      const t = activeVideoClip.transform || defaultImageTransform;
+                      const transformStyle = {
+                        transform: `
+                          translate(${t.positionX}px, ${t.positionY}px)
+                          rotateX(${t.rotationX}deg)
+                          rotateY(${t.rotationY}deg)
+                          scaleX(${t.scaleX})
+                          scaleY(${t.scaleY})
+                        `,
+                        transformStyle: 'preserve-3d' as const,
+                      };
+                      return (
+                        <img
+                          src={activeVideoClip.src}
+                          alt={activeVideoClip.name}
+                          className="w-full h-full object-contain transition-transform duration-100"
+                          style={transformStyle}
+                        />
+                      );
+                    })()
                     )
                 ) : (
                     <div className="absolute inset-0 flex flex-col items-center justify-center text-white z-10">

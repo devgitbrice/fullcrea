@@ -4,9 +4,10 @@ import { useEffect } from 'react';
 import Sidebar from '@/components/editor/Sidebar';
 import Player from '@/components/editor/Player';
 import Timeline from '@/components/editor/Timeline';
-import PreviewModal from '@/components/PreviewModal'; 
-import ProjectHeader from '@/components/editor/ProjectHeader'; 
-import ViewSelector from '@/components/editor/ViewSelector'; 
+import PreviewModal from '@/components/PreviewModal';
+import ProjectHeader from '@/components/editor/ProjectHeader';
+import ViewSelector from '@/components/editor/ViewSelector';
+import ImagePropertyPanel from '@/components/editor/ImagePropertyPanel';
 import { ProjectProvider, useProject } from '@/components/ProjectContext';
 
 function EditorLayout() {
@@ -45,9 +46,14 @@ function EditorLayout() {
               <ProjectHeader />
               <div className={`
                  relative z-0 bg-gray-900 border-b border-gray-800 transition-all duration-300 ease-in-out
-                 ${currentView === 'video' ? 'h-[60%]' : 'h-16 shrink-0'} 
+                 ${currentView === 'video' ? 'h-[60%]' : 'h-16 shrink-0'}
               `}>
-                <Player />
+                <div className="flex h-full">
+                  <div className="flex-1">
+                    <Player />
+                  </div>
+                  <ImagePropertyPanel />
+                </div>
               </div>
               <div className="flex-1 bg-gray-950 z-0 min-h-0">
                 <Timeline />

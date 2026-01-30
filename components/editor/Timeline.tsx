@@ -27,6 +27,7 @@ export default function Timeline() {
   } = useProject();
 
   const [isScrubbing, setIsScrubbing] = useState(false);
+  const [draggingClip, setDraggingClip] = useState<{ id: string; offsetX: number } | null>(null);
 
   // ✅ Animer le playhead directement via subscription (pas de re-render)
   useEffect(() => {
@@ -135,9 +136,43 @@ export default function Timeline() {
     document.addEventListener('mouseup', onMouseUp);
   };
 
+  // --- DÉPLACEMENT LIBRE DES CLIPS ---
+  const handleClipDragStart = (e: ReactMouseEvent, clip: Clip) => {
+    if (activeTool !== 'select') return;
+    e.stopPropagation();
+    e.preventDefault();
+
+    const rect = e.currentTarget.getBoundingClientRect();
+    const offsetX = e.clientX - rect.left;
+
+    setDraggingClip({ id: clip.id, offsetX });
+    setSelectedClipId(clip.id);
+
+    const onMouseMove = (moveEvent: MouseEvent) => {
+      if (!timelineRef.current) return;
+      const timelineRect = timelineRef.current.getBoundingClientRect();
+      const x = ((moveEvent.clientX - timelineRect.left) + timelineRef.current.scrollLeft - offsetX) / zoomLevel;
+      const newStart = Math.max(0, x);
+
+      setClips(prev => prev.map(c =>
+        c.id === clip.id ? { ...c, start: newStart } : c
+      ));
+    };
+
+    const onMouseUp = () => {
+      setDraggingClip(null);
+      document.removeEventListener('mousemove', onMouseMove);
+      document.removeEventListener('mouseup', onMouseUp);
+    };
+
+    document.addEventListener('mousemove', onMouseMove);
+    document.addEventListener('mouseup', onMouseUp);
+  };
+
   // --- SCRUBBING ---
   const handleMouseDown = (e: ReactMouseEvent) => {
     if (e.button !== 0) return;
+    if (draggingClip) return; // Ne pas scrub si on drag un clip
     if (e.target === e.currentTarget) setSelectedClipId(null);
     setIsScrubbing(true);
     updateTimeFromMouse(e.clientX);
@@ -242,17 +277,21 @@ export default function Timeline() {
                 {trackIndex === 1 ? 'Video' : 'Audio'}
               </div>
               {clips.filter(c => c.track === trackIndex).map(clip => (
-                <div 
-                  key={clip.id} 
-                  className={`absolute top-2 bottom-2 rounded border overflow-hidden flex items-center px-2 text-xs group transition-all duration-150 
-                    ${getClipStyle(clip.type)} 
+                <div
+                  key={clip.id}
+                  className={`absolute top-2 bottom-2 rounded border overflow-hidden flex items-center px-2 text-xs group transition-all duration-150
+                    ${getClipStyle(clip.type)}
                     ${activeTool === 'cut' ? 'cursor-crosshair' : 'cursor-grab active:cursor-grabbing'}
                     ${selectedClipId === clip.id ? 'ring-2 ring-white border-white z-20 shadow-[0_0_15px_rgba(255,255,255,0.3)]' : 'hover:shadow-lg hover:shadow-white/5'}
+                    ${draggingClip?.id === clip.id ? 'opacity-80 z-30' : ''}
                   `}
                   style={{ left: `${clip.start * zoomLevel}px`, width: `${clip.width * zoomLevel}px` }}
-                  draggable={activeTool === 'select'}
-                  onDragStart={(e) => { e.stopPropagation(); e.dataTransfer.setData("application/react-dnd", JSON.stringify(clip)); }}
-                  onMouseDown={(e) => e.stopPropagation()}
+                  onMouseDown={(e) => {
+                    e.stopPropagation();
+                    if (activeTool === 'select') {
+                      handleClipDragStart(e, clip);
+                    }
+                  }}
                   onClick={(e) => {
                     e.stopPropagation();
                     if (activeTool === 'select') setSelectedClipId(clip.id);
