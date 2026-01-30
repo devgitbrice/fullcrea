@@ -1,36 +1,52 @@
 "use client";
 
-import { useRef, DragEvent, useState, useEffect, MouseEvent as ReactMouseEvent } from 'react';
+import { useRef, DragEvent, useState, useEffect, MouseEvent as ReactMouseEvent, useCallback, useMemo } from 'react';
 import { Music } from 'lucide-react';
-import { useProject, Clip } from '@/components/ProjectContext'; 
+import { useProject, Clip } from '@/components/ProjectContext';
 import TimelineToolbar from './TimelineToolbar';
 
 export default function Timeline() {
   const timelineRef = useRef<HTMLDivElement>(null);
-  const { 
-    clips, 
-    setClips, 
-    currentTime, 
-    setCurrentTime, 
-    currentView, 
-    activeTool, 
-    zoomLevel, 
+  // ✅ Ref pour animer le playhead sans re-render
+  const playheadRef = useRef<HTMLDivElement>(null);
+
+  const {
+    clips,
+    setClips,
+    currentTime,
+    setCurrentTime,
+    currentView,
+    activeTool,
+    zoomLevel,
     setZoomLevel,
     selectedClipId,
     setSelectedClipId,
-    isPlaying
+    isPlaying,
+    subscribeToTime,
+    currentTimeRef
   } = useProject();
-  
+
   const [isScrubbing, setIsScrubbing] = useState(false);
+
+  // ✅ Animer le playhead directement via subscription (pas de re-render)
+  useEffect(() => {
+    const unsubscribe = subscribeToTime((time) => {
+      if (playheadRef.current) {
+        playheadRef.current.style.transform = `translateX(${time * zoomLevel}px)`;
+      }
+    });
+    return unsubscribe;
+  }, [subscribeToTime, zoomLevel]);
 
   // --- CONFIGURATION SNAPPING ---
   const SNAP_THRESHOLD = 10 / zoomLevel;
 
-  const getSnappedPosition = (pos: number, excludeId?: string) => {
+  // ✅ Mémoriser getSnappedPosition
+  const getSnappedPosition = useCallback((pos: number, excludeId?: string) => {
     let bestPos = pos;
     let minDiff = SNAP_THRESHOLD;
 
-    const snapPoints = [currentTime];
+    const snapPoints = [currentTimeRef.current];
     clips.forEach(c => {
       if (c.id !== excludeId) {
         snapPoints.push(c.start);
@@ -46,7 +62,7 @@ export default function Timeline() {
       }
     });
     return bestPos;
-  };
+  }, [clips, currentTimeRef, SNAP_THRESHOLD]);
 
   // --- GESTION DE LA SUPPRESSION ---
   useEffect(() => {
@@ -171,11 +187,25 @@ export default function Timeline() {
     }
   };
 
-  const getClipStyle = (type: string) => {
+  // ✅ Mémoriser getClipStyle
+  const getClipStyle = useCallback((type: string) => {
     if (type === 'audio') return "bg-green-600/40 border-green-500 text-green-100";
     if (type === 'image') return "bg-purple-600/40 border-purple-500 text-purple-100";
     return "bg-blue-600/40 border-blue-500 text-blue-100";
-  };
+  }, []);
+
+  // ✅ Mémoriser les marques de la règle (ne change qu'avec zoomLevel)
+  const rulerMarks = useMemo(() => {
+    return Array.from({ length: 200 }).map((_, i) => (
+      <div
+        key={i}
+        className="absolute border-l border-gray-700 h-2 pl-1 text-[10px] text-gray-500"
+        style={{ left: i * 100 * zoomLevel }}
+      >
+        {i * 10}s
+      </div>
+    ));
+  }, [zoomLevel]);
 
   return (
     <div className="flex flex-col h-full bg-gray-900 text-gray-300 border-t border-gray-700 select-none">
@@ -185,22 +215,18 @@ export default function Timeline() {
         className={`timeline-container flex-1 overflow-x-auto overflow-y-hidden relative custom-scrollbar ${isScrubbing ? 'cursor-grabbing' : 'cursor-default'}`}
         onDragOver={handleDragOver} onDrop={handleDrop} onMouseDown={handleMouseDown}
       >
-        {/* RÈGLE */}
+        {/* RÈGLE (mémorisée) */}
         <div className="h-6 bg-gray-950 sticky top-0 border-b border-gray-800 flex items-end z-30 min-w-[10000px]">
-          {Array.from({ length: 200 }).map((_, i) => (
-             <div key={i} className="absolute border-l border-gray-700 h-2 pl-1 text-[10px] text-gray-500" style={{ left: i * 100 * zoomLevel }}>
-               {i * 10}s
-             </div>
-          ))}
+          {rulerMarks}
         </div>
 
-        {/* TÊTE DE LECTURE OPTIMISÉE (GPU) */}
-        <div 
+        {/* TÊTE DE LECTURE OPTIMISÉE (GPU + Ref) */}
+        <div
+          ref={playheadRef}
           className="absolute top-0 bottom-0 w-4 -ml-2 z-50 cursor-ew-resize flex justify-center group"
-          style={{ 
+          style={{
             transform: `translateX(${currentTime * zoomLevel}px)`,
-            willChange: 'transform',
-            transition: isPlaying ? 'none' : 'transform 0.1s ease-out'
+            willChange: 'transform'
           }}
           onMouseDown={(e) => { e.stopPropagation(); handleMouseDown(e); }}
         >
