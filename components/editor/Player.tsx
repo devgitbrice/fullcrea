@@ -1,84 +1,111 @@
 "use client";
 
-import { useRef, useEffect } from 'react';
+import { useRef, useEffect, useMemo, useCallback, useState } from 'react';
 import { Play, Pause, SkipBack, SkipForward, Video, Music, AlertCircle } from 'lucide-react';
-import { useProject } from '@/components/ProjectContext';
+import { useProject, Clip } from '@/components/ProjectContext';
 
 export default function Player() {
-  const { isPlaying, togglePlay, currentTime, clips, setCurrentTime, scale, currentView } = useProject();
-  
+  const { isPlaying, togglePlay, currentTime, clips, setCurrentTime, scale, currentView, subscribeToTime, currentTimeRef } = useProject();
+
   const videoRef = useRef<HTMLVideoElement>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
 
-  const activeVideoClip = clips.find(
-    (c) => c.track === 1 && currentTime >= c.start && currentTime < c.start + c.width
-  );
+  // ✅ Cache pour éviter les recherches répétées de clips
+  const lastVideoClipRef = useRef<Clip | null>(null);
+  const lastAudioClipRef = useRef<Clip | null>(null);
 
-  const activeAudioClip = clips.find(
-    (c) => c.track === 2 && currentTime >= c.start && currentTime < c.start + c.width
-  );
+  // ✅ Mémoriser les clips actifs (pour l'affichage UI uniquement)
+  const activeVideoClip = useMemo(() => {
+    return clips.find(
+      (c) => c.track === 1 && currentTime >= c.start && currentTime < c.start + c.width
+    ) || null;
+  }, [clips, currentTime]);
+
+  const activeAudioClip = useMemo(() => {
+    return clips.find(
+      (c) => c.track === 2 && currentTime >= c.start && currentTime < c.start + c.width
+    ) || null;
+  }, [clips, currentTime]);
 
   const isVideoMode = currentView === 'video';
 
-  // --- MOTEUR DE SYNCHRONISATION VIDÉO ---
-  useEffect(() => {
-    if (activeVideoClip && videoRef.current) {
-      const targetTime = (currentTime - activeVideoClip.start) / scale;
-      const diff = Math.abs(videoRef.current.currentTime - targetTime);
+  // ✅ Fonction de recherche de clip optimisée (inline, pas de state)
+  const findClipAtTime = useCallback((time: number, track: 1 | 2): Clip | null => {
+    return clips.find(
+      (c) => c.track === track && time >= c.start && time < c.start + c.width
+    ) || null;
+  }, [clips]);
 
-      if (isPlaying) {
-        if (diff > 0.2) videoRef.current.currentTime = targetTime;
-        // On vérifie activeVideoClip.src pour éviter l'erreur sur une vidéo vide
-        if (videoRef.current.paused && activeVideoClip.src) {
-             videoRef.current.play().catch(() => {});
+  // --- MOTEUR DE SYNCHRONISATION VIDÉO/AUDIO OPTIMISÉ ---
+  useEffect(() => {
+    // S'abonner aux mises à jour de temps haute fréquence
+    const unsubscribe = subscribeToTime((time) => {
+      // Synchronisation VIDÉO
+      const videoClip = findClipAtTime(time, 1);
+      if (videoClip && videoRef.current) {
+        const targetTime = (time - videoClip.start) / scale;
+        const diff = Math.abs(videoRef.current.currentTime - targetTime);
+
+        if (isPlaying) {
+          // Resync seulement si décalage important
+          if (diff > 0.3) videoRef.current.currentTime = targetTime;
+          if (videoRef.current.paused && videoClip.src) {
+            videoRef.current.play().catch(() => {});
+          }
         }
-      } else {
-        if (diff > 0.05) videoRef.current.currentTime = targetTime;
+        lastVideoClipRef.current = videoClip;
+      } else if (lastVideoClipRef.current && videoRef.current) {
+        // On sort du clip, mettre en pause
         videoRef.current.pause();
+        lastVideoClipRef.current = null;
       }
-    }
-  }, [currentTime, isPlaying, activeVideoClip, scale]);
 
-  // --- MOTEUR DE SYNCHRONISATION AUDIO (CORRIGÉ) ---
-  useEffect(() => {
-    // CRUCIAL : On ajoute '&& activeAudioClip.src' pour ne pas essayer de lire du vide
-    if (activeAudioClip && activeAudioClip.src && audioRef.current) {
-      
-      const targetTime = (currentTime - activeAudioClip.start) / scale;
-      const diff = Math.abs(audioRef.current.currentTime - targetTime);
+      // Synchronisation AUDIO
+      const audioClip = findClipAtTime(time, 2);
+      if (audioClip && audioClip.src && audioRef.current) {
+        const targetTime = (time - audioClip.start) / scale;
+        const diff = Math.abs(audioRef.current.currentTime - targetTime);
 
-      if (isPlaying) {
-        if (diff > 0.2) audioRef.current.currentTime = targetTime;
-        
-        if (audioRef.current.paused) {
-            // Le catch est important pour intercepter les erreurs de lecture
-            audioRef.current.play().catch((e) => console.log("Lecture audio impossible (source vide ?)", e));
+        if (isPlaying) {
+          if (diff > 0.3) audioRef.current.currentTime = targetTime;
+          if (audioRef.current.paused) {
+            audioRef.current.play().catch(() => {});
+          }
         }
-      } else {
-        if (diff > 0.05) audioRef.current.currentTime = targetTime;
+        lastAudioClipRef.current = audioClip;
+      } else if (lastAudioClipRef.current && audioRef.current) {
         audioRef.current.pause();
+        lastAudioClipRef.current = null;
       }
-    } 
-    else if (audioRef.current) {
-        // Si plus de clip ou source vide, on coupe le son
-        audioRef.current.pause();
+    });
+
+    return unsubscribe;
+  }, [subscribeToTime, findClipAtTime, scale, isPlaying]);
+
+  // Gérer pause/play
+  useEffect(() => {
+    if (!isPlaying) {
+      videoRef.current?.pause();
+      audioRef.current?.pause();
     }
-  }, [currentTime, isPlaying, activeAudioClip, scale]);
+  }, [isPlaying]);
 
 
-  const formatTime = (px: number) => {
+  // ✅ Mémoriser formatTime
+  const formatTime = useCallback((px: number) => {
     const totalSeconds = Math.floor(px / scale);
     const date = new Date(0);
     date.setSeconds(totalSeconds);
     return date.toISOString().substr(11, 8);
-  };
+  }, [scale]);
 
-  const handleSeek = (direction: 'forward' | 'backward') => {
+  // ✅ Mémoriser handleSeek
+  const handleSeek = useCallback((direction: 'forward' | 'backward') => {
     setCurrentTime((prev) => {
       const delta = direction === 'forward' ? scale : -scale;
       return Math.max(0, prev + delta);
     });
-  };
+  }, [scale, setCurrentTime]);
 
   return (
     <div className={`flex flex-col h-full bg-black text-white border-l border-gray-800 relative z-0 ${!isVideoMode ? 'justify-end' : ''}`}>
