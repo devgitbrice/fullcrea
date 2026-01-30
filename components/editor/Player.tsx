@@ -17,14 +17,21 @@ export default function Player() {
   // ✅ Mémoriser les clips actifs (pour l'affichage UI uniquement)
   const activeVideoClip = useMemo(() => {
     return clips.find(
-      (c) => c.track === 1 && currentTime >= c.start && currentTime < c.start + c.width
+      (c) => (c.type === 'video' || c.type === 'image') && currentTime >= c.start && currentTime < c.start + c.width
     ) || null;
   }, [clips, currentTime]);
 
   const activeAudioClip = useMemo(() => {
     return clips.find(
-      (c) => c.track === 2 && currentTime >= c.start && currentTime < c.start + c.width
+      (c) => c.type === 'audio' && currentTime >= c.start && currentTime < c.start + c.width
     ) || null;
+  }, [clips, currentTime]);
+
+  // ✅ Mémoriser les clips texte actifs
+  const activeTextClips = useMemo(() => {
+    return clips.filter(
+      (c) => c.type === 'text' && currentTime >= c.start && currentTime < c.start + c.width
+    );
   }, [clips, currentTime]);
 
   const isVideoMode = currentView === 'video';
@@ -37,9 +44,17 @@ export default function Player() {
   }, [clips]);
 
   // --- MOTEUR DE SYNCHRONISATION VIDÉO/AUDIO OPTIMISÉ ---
+  // ✅ Ref pour suivre le dernier temps de sync (évite les resyncs trop fréquents)
+  const lastSyncTimeRef = useRef<number>(0);
+  const SYNC_INTERVAL = 500; // Sync max toutes les 500ms
+  const SYNC_THRESHOLD = 0.5; // Seuil de décalage en secondes
+
   useEffect(() => {
     // S'abonner aux mises à jour de temps haute fréquence
     const unsubscribe = subscribeToTime((time) => {
+      const now = performance.now();
+      const shouldSync = now - lastSyncTimeRef.current > SYNC_INTERVAL;
+
       // Synchronisation VIDÉO
       const videoClip = findClipAtTime(time, 1);
       if (videoClip && videoRef.current) {
@@ -47,8 +62,11 @@ export default function Player() {
         const diff = Math.abs(videoRef.current.currentTime - targetTime);
 
         if (isPlaying) {
-          // Resync seulement si décalage important
-          if (diff > 0.3) videoRef.current.currentTime = targetTime;
+          // Resync seulement si décalage important ET intervalle respecté
+          if (diff > SYNC_THRESHOLD && shouldSync) {
+            videoRef.current.currentTime = targetTime;
+            lastSyncTimeRef.current = now;
+          }
           if (videoRef.current.paused && videoClip.src) {
             videoRef.current.play().catch(() => {});
           }
@@ -67,7 +85,10 @@ export default function Player() {
         const diff = Math.abs(audioRef.current.currentTime - targetTime);
 
         if (isPlaying) {
-          if (diff > 0.3) audioRef.current.currentTime = targetTime;
+          if (diff > SYNC_THRESHOLD && shouldSync) {
+            audioRef.current.currentTime = targetTime;
+            lastSyncTimeRef.current = now;
+          }
           if (audioRef.current.paused) {
             audioRef.current.play().catch(() => {});
           }
@@ -123,7 +144,10 @@ export default function Player() {
                         ref={videoRef}
                         src={activeVideoClip.src}
                         className="w-full h-full object-contain"
-                        muted={false} 
+                        muted={false}
+                        playsInline
+                        preload="auto"
+                        style={{ willChange: 'transform' }}
                     />
                     ) : (
                     (() => {
@@ -133,9 +157,11 @@ export default function Player() {
                           translate(${t.positionX}px, ${t.positionY}px)
                           rotateX(${t.rotationX}deg)
                           rotateY(${t.rotationY}deg)
+                          rotateZ(${t.rotationZ || 0}deg)
                           scaleX(${t.scaleX})
                           scaleY(${t.scaleY})
                         `,
+                        transformOrigin: 'center center',
                         transformStyle: 'preserve-3d' as const,
                       };
                       return (
@@ -154,6 +180,28 @@ export default function Player() {
                     <p className="text-sm text-red-400">Source manquante</p>
                     </div>
                 )}
+
+                {/* Affichage des clips texte en superposition */}
+                {activeTextClips.map(textClip => (
+                  <div
+                    key={textClip.id}
+                    className="absolute inset-0 flex items-center justify-center pointer-events-none z-30"
+                  >
+                    <span
+                      style={{
+                        fontSize: `${textClip.fontSize || 48}px`,
+                        fontFamily: textClip.fontFamily || 'Arial',
+                        color: textClip.textColor || '#ffffff',
+                        textShadow: '2px 2px 4px rgba(0,0,0,0.8)',
+                        whiteSpace: 'pre-wrap',
+                        textAlign: 'center',
+                        maxWidth: '90%',
+                      }}
+                    >
+                      {textClip.text || 'Texte'}
+                    </span>
+                  </div>
+                ))}
                 </div>
             ) : (
                 <div className="flex flex-col items-center gap-3 opacity-50">
@@ -211,14 +259,14 @@ export default function Player() {
             <SkipBack size={20} />
           </button>
 
-          <button 
+          <button
             onClick={togglePlay}
             className={`
-              w-12 h-12 flex items-center justify-center rounded-full text-white shadow-lg transition-all transform active:scale-95
-              ${isPlaying ? 'bg-red-600 hover:bg-red-500' : 'bg-white text-black hover:bg-gray-200'}
+              w-12 h-12 flex items-center justify-center rounded-full shadow-lg transition-all transform active:scale-95
+              ${isPlaying ? 'bg-red-600 hover:bg-red-500 text-white' : 'bg-white hover:bg-gray-200 text-black'}
             `}
           >
-            {isPlaying ? <Pause size={20} fill="currentColor" /> : <Play size={20} fill="currentColor" className="ml-1" />}
+            {isPlaying ? <Pause size={20} fill="currentColor" /> : <Play size={20} fill="black" className="ml-1" />}
           </button>
 
           <button onClick={() => handleSeek('forward')} className="text-gray-400 hover:text-white transition active:scale-90">

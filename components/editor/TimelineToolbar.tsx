@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect } from 'react';
-import { MousePointer2, Scissors } from 'lucide-react';
+import { MousePointer2, Scissors, Type } from 'lucide-react';
 import { useProject } from '@/components/ProjectContext';
 
 export default function TimelineToolbar() {
@@ -15,6 +15,7 @@ export default function TimelineToolbar() {
 
       if (e.key.toLowerCase() === 'v') setActiveTool('select');
       if (e.key.toLowerCase() === 'c') setActiveTool('cut');
+      if (e.key.toLowerCase() === 't') setActiveTool('text');
     };
 
     window.addEventListener('keydown', handleKeyDown);
@@ -37,11 +38,11 @@ export default function TimelineToolbar() {
       </button>
 
       {/* Bouton Cutter */}
-      <button 
+      <button
         onClick={() => setActiveTool('cut')}
         className={`p-1.5 rounded transition-all duration-200 ${
-          activeTool === 'cut' 
-            ? 'bg-red-600 text-white shadow-lg shadow-red-900/20' 
+          activeTool === 'cut'
+            ? 'bg-red-600 text-white shadow-lg shadow-red-900/20'
             : 'hover:bg-gray-800 text-gray-400'
         }`}
         title="Outil Cutter (C)"
@@ -49,13 +50,30 @@ export default function TimelineToolbar() {
         <Scissors size={18} />
       </button>
 
+      {/* Bouton Texte */}
+      <button
+        onClick={() => setActiveTool('text')}
+        className={`p-1.5 rounded transition-all duration-200 ${
+          activeTool === 'text'
+            ? 'bg-yellow-600 text-white shadow-lg shadow-yellow-900/20'
+            : 'hover:bg-gray-800 text-gray-400'
+        }`}
+        title="Outil Texte (T)"
+      >
+        <Type size={18} />
+      </button>
+
       {/* Séparateur visuel */}
       <div className="w-px h-4 bg-gray-800 mx-2" />
 
       {/* Label d'état */}
       <span className="text-[10px] text-gray-500 uppercase font-bold tracking-widest hidden sm:inline">
-        Outil actuel : <span className={activeTool === 'cut' ? 'text-red-500' : 'text-blue-500'}>
-          {activeTool === 'select' ? 'Sélection' : 'Cutter'}
+        Outil actuel : <span className={
+          activeTool === 'cut' ? 'text-red-500' :
+          activeTool === 'text' ? 'text-yellow-500' :
+          'text-blue-500'
+        }>
+          {activeTool === 'select' ? 'Sélection' : activeTool === 'cut' ? 'Cutter' : 'Texte'}
         </span>
       </span>
     </div>
