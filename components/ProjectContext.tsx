@@ -3,6 +3,24 @@
 import { createContext, useContext, useState, useEffect, useRef, ReactNode, Dispatch, SetStateAction, useCallback, MutableRefObject } from 'react';
 
 // --- INTERFACES ---
+export interface ImageTransform {
+  rotationX: number;
+  rotationY: number;
+  scaleX: number;
+  scaleY: number;
+  positionX: number;
+  positionY: number;
+}
+
+export const defaultImageTransform: ImageTransform = {
+  rotationX: 0,
+  rotationY: 0,
+  scaleX: 1,
+  scaleY: 1,
+  positionX: 0,
+  positionY: 0,
+};
+
 export interface Clip {
   id: string;
   name: string;
@@ -11,6 +29,8 @@ export interface Clip {
   start: number;
   width: number;
   src: string;
+  // Propriétés de transformation pour les images
+  transform?: ImageTransform;
 }
 
 export interface Asset {
