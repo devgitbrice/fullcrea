@@ -4,6 +4,9 @@ import { useRef, DragEvent, useState, useEffect, MouseEvent as ReactMouseEvent, 
 import { Music, Plus, Video, AudioLines, Type } from 'lucide-react';
 import { useProject, Clip } from '@/components/ProjectContext';
 import TimelineToolbar from './TimelineToolbar';
+import AudioWaveform from './AudioWaveform';
+
+const PX_PER_SEC_BASE = 30;
 
 export default function Timeline() {
   const timelineRef = useRef<HTMLDivElement>(null);
@@ -361,9 +364,18 @@ export default function Timeline() {
                     <div className="absolute right-0 top-0 bottom-0 w-2 cursor-ew-resize hover:bg-white/30 z-10" onMouseDown={(e) => handleTrim(e, clip, 'end')} />
                   </>
                 )}
-                {clip.type === 'audio' && <Music size={12} className="mr-2 shrink-0 opacity-50" />}
-                {clip.type === 'text' && <Type size={12} className="mr-2 shrink-0 opacity-50" />}
-                <span className="truncate">{clip.name}</span>
+                {/* Waveform de fond pour les clips audio */}
+                {clip.type === 'audio' && clip.src && (
+                  <AudioWaveform
+                    src={clip.src}
+                    durationSeconds={clip.width / PX_PER_SEC_BASE}
+                  />
+                )}
+                <div className="relative z-[1] flex items-center min-w-0 w-full">
+                  {clip.type === 'audio' && <Music size={12} className="mr-2 shrink-0 opacity-70" />}
+                  {clip.type === 'text' && <Type size={12} className="mr-2 shrink-0 opacity-50" />}
+                  <span className="truncate drop-shadow-[0_1px_1px_rgba(0,0,0,0.6)]">{clip.name}</span>
+                </div>
               </div>
             ))}
           </div>
