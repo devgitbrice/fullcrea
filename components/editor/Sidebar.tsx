@@ -1,40 +1,18 @@
 "use client";
 
-import { useState, useRef, ChangeEvent } from 'react';
-import { Upload, Piano, Wand2, FolderOpen } from 'lucide-react'; // Ajout d'icônes pour les sections
-import DraggableAsset from './DraggableAsset'; 
-import { useProject, Asset } from '@/components/ProjectContext'; 
+import { useRef, ChangeEvent } from 'react';
+import { Upload, Piano, Wand2, FolderOpen } from 'lucide-react';
+import DraggableAsset from './DraggableAsset';
+import ProjectSelector from './ProjectSelector';
+import { useProject } from '@/components/ProjectContext';
 
 export default function Sidebar() {
   const fileInputRef = useRef<HTMLInputElement>(null);
-  
-  // On récupère currentView pour savoir quoi afficher
-  const { setPreviewAsset, currentView } = useProject(); 
-  
-  // --- DONNÉES UTILISATEUR (Fichiers importés) ---
-  const [assets, setAssets] = useState<Asset[]>([
-    { 
-      id: 'asset_1', 
-      name: 'rush_vacances.mp4', 
-      type: 'video', 
-      src: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4' 
-    },
-    { 
-      id: 'asset_2', 
-      name: 'background_loop.mp3', 
-      type: 'audio', 
-      src: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3' 
-    },
-    { 
-      id: 'asset_3', 
-      name: 'logo_final.png', 
-      type: 'image', 
-      src: 'https://images.unsplash.com/photo-1472214103451-9374bd1c798e?auto=format&fit=crop&w=1000&q=80' 
-    },
-  ]);
+
+  // Les assets sont rattachés au projet courant (via le contexte)
+  const { setPreviewAsset, currentView, assets, setAssets } = useProject();
 
   // --- DONNÉES FACTICES (Pour l'exemple Music/Podcast) ---
-  // Note: On met src="" pour l'instant car ce sont des presets
   const instruments = [
     { name: 'Piano Grand', type: 'audio', src: '' },
     { name: 'Synthwave Bass', type: 'audio', src: '' },
@@ -54,19 +32,19 @@ export default function Sidebar() {
     const file = event.target.files?.[0];
     if (file) {
       let type: 'video' | 'audio' | 'image' = 'image';
-      
+
       if (file.type.startsWith('video')) type = 'video';
       else if (file.type.startsWith('audio')) type = 'audio';
 
       const objectUrl = URL.createObjectURL(file);
 
       setAssets((prev) => [
-        ...prev, 
-        { 
+        ...prev,
+        {
           id: `imported_${Date.now()}`,
-          name: file.name, 
+          name: file.name,
           type: type,
-          src: objectUrl 
+          src: objectUrl
         }
       ]);
     }
@@ -74,30 +52,35 @@ export default function Sidebar() {
 
   return (
     <div className="w-64 bg-gray-950 border-r border-gray-800 flex flex-col h-full text-gray-300 shrink-0 select-none">
-      
+
       {/* --- HEADER SIDEBAR --- */}
-      <div className="p-4 border-b border-gray-800">
-        <h1 className="font-bold text-white mb-4 text-xl tracking-tight">Studio Next</h1>
-        
-        <input 
-          type="file" 
-          ref={fileInputRef} 
-          onChange={handleFileChange} 
-          className="hidden" 
+      <div className="p-4 border-b border-gray-800 space-y-3">
+        <div className="flex items-center justify-between">
+          <h1 className="font-bold text-white text-lg tracking-tight">Studio Next</h1>
+        </div>
+
+        {/* Sélecteur de projet (haut à gauche) */}
+        <ProjectSelector />
+
+        <input
+          type="file"
+          ref={fileInputRef}
+          onChange={handleFileChange}
+          className="hidden"
           accept="image/*,video/*,audio/*,.wav,.mp3"
         />
-        
-        <button 
-          onClick={handleImportClick} 
+
+        <button
+          onClick={handleImportClick}
           className="w-full flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-700 text-white py-2 rounded text-sm font-medium transition shadow-lg shadow-blue-900/20"
         >
           <Upload size={16} /> Importer Média
         </button>
       </div>
-      
+
       {/* --- CONTENU SCROLLABLE --- */}
       <div className="flex-1 overflow-y-auto p-2 space-y-6 custom-scrollbar">
-        
+
         {/* SECTION 1 : BIBLIOTHÈQUE (Toujours visible) */}
         <div>
             <div className="flex items-center gap-2 text-xs font-semibold text-gray-500 uppercase px-2 mb-2">
@@ -105,15 +88,15 @@ export default function Sidebar() {
             </div>
             <div className="space-y-1">
                 {assets.map((asset) => (
-                <div 
-                    key={asset.id} 
+                <div
+                    key={asset.id}
                     onDoubleClick={() => setPreviewAsset(asset)}
                     title="Double-cliquez pour prévisualiser"
                 >
-                    <DraggableAsset 
-                        name={asset.name} 
+                    <DraggableAsset
+                        name={asset.name}
                         type={asset.type}
-                        src={asset.src} 
+                        src={asset.src}
                     />
                 </div>
                 ))}
@@ -131,7 +114,6 @@ export default function Sidebar() {
              </div>
              <div className="space-y-1">
                {instruments.map((inst, i) => (
-                 // On utilise DraggableAsset même pour les presets (src vide pour l'instant)
                  <DraggableAsset key={`inst_${i}`} name={inst.name} type="audio" src={inst.src} />
                ))}
              </div>

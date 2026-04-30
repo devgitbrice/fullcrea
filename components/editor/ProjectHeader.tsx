@@ -4,15 +4,15 @@ import { useProject } from '@/components/ProjectContext';
 import { Settings, Monitor } from 'lucide-react';
 
 export default function ProjectHeader() {
-  const { projectSettings } = useProject();
+  const { projectSettings, currentProject } = useProject();
 
   return (
     <div className="h-14 bg-gray-950 border-b border-gray-800 flex items-center justify-between px-6 select-none">
-      
+
       {/* Partie Gauche (Titre ou Breadcrumb) */}
       <div className="flex items-center gap-2 text-gray-400 text-sm">
         <Monitor size={16} />
-        <span className="font-medium text-gray-200">Mon Film 01</span>
+        <span className="font-medium text-gray-200">{currentProject.name}</span>
         <span className="text-gray-600">/</span>
         <span>Édition</span>
       </div>

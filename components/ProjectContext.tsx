@@ -1,6 +1,6 @@
 "use client";
 
-import { createContext, useContext, useState, useEffect, useRef, ReactNode, Dispatch, SetStateAction, useCallback, MutableRefObject } from 'react';
+import { createContext, useContext, useState, useEffect, useRef, ReactNode, Dispatch, SetStateAction, useCallback, useMemo, MutableRefObject } from 'react';
 
 // --- INTERFACES ---
 export interface ImageTransform {
@@ -56,27 +56,52 @@ export interface Track {
   name: string;
 }
 
-interface ProjectSettings {
+export interface ProjectSettings {
   width: number;
   height: number;
   fps: number;
+}
+
+// Un projet contient TOUS les éléments d'interface qui lui sont rattachés
+export interface Project {
+  id: string;
+  name: string;
+  clips: Clip[];
+  tracks: Track[];
+  assets: Asset[];
+  projectSettings: ProjectSettings;
+  currentView: ViewMode;
 }
 
 // Type pour les subscribers du temps
 type TimeSubscriber = (time: number) => void;
 
 interface ProjectContextType {
+  // --- Multi-projets ---
+  projects: Project[];
+  currentProjectId: string;
+  currentProject: Project;
+  createProject: (name?: string) => string;
+  selectProject: (id: string) => void;
+  renameProject: (id: string, name: string) => void;
+
+  // --- Lecture ---
   isPlaying: boolean;
   togglePlay: () => void;
   currentTime: number;
   setCurrentTime: Dispatch<SetStateAction<number>>;
-  // Nouvelle API pour lecture fluide sans re-renders
   currentTimeRef: MutableRefObject<number>;
   subscribeToTime: (callback: TimeSubscriber) => () => void;
+
+  // --- Données du projet courant (proxy) ---
   clips: Clip[];
   setClips: Dispatch<SetStateAction<Clip[]>>;
   tracks: Track[];
   addTrack: (type: 'video' | 'audio') => void;
+  assets: Asset[];
+  setAssets: Dispatch<SetStateAction<Asset[]>>;
+
+  // --- Etat UI global ---
   previewAsset: Asset | null;
   setPreviewAsset: (asset: Asset | null) => void;
   scale: number;
@@ -93,89 +118,176 @@ interface ProjectContextType {
 
 const ProjectContext = createContext<ProjectContextType | undefined>(undefined);
 
+const DEFAULT_SETTINGS: ProjectSettings = { width: 1920, height: 1080, fps: 30 };
+
+const buildDefaultTracks = (): Track[] => [
+  { id: 1, type: 'video', name: 'Video 1' },
+  { id: 2, type: 'audio', name: 'Audio 1' }
+];
+
+const buildEmptyProject = (id: string, name: string): Project => ({
+  id,
+  name,
+  clips: [],
+  tracks: buildDefaultTracks(),
+  assets: [],
+  projectSettings: { ...DEFAULT_SETTINGS },
+  currentView: 'video',
+});
+
 export function ProjectProvider({ children }: { children: ReactNode }) {
+  // --- MULTI-PROJETS ---
+  const [projects, setProjects] = useState<Project[]>(() => [{
+    id: 'project_default',
+    name: 'Mon Film 01',
+    clips: [
+      { id: 'clip_1', name: 'rush_vacances.mp4', type: 'video', track: 1, start: 100, width: 250, src: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4' },
+      { id: 'clip_2', name: 'background_loop.mp3', type: 'audio', track: 2, start: 400, width: 300, src: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3' }
+    ],
+    tracks: buildDefaultTracks(),
+    assets: [
+      { id: 'asset_1', name: 'rush_vacances.mp4', type: 'video', src: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4' },
+      { id: 'asset_2', name: 'background_loop.mp3', type: 'audio', src: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3' },
+      { id: 'asset_3', name: 'logo_final.png', type: 'image', src: 'https://images.unsplash.com/photo-1472214103451-9374bd1c798e?auto=format&fit=crop&w=1000&q=80' },
+    ],
+    projectSettings: { ...DEFAULT_SETTINGS },
+    currentView: 'video',
+  }]);
+  const [currentProjectId, setCurrentProjectId] = useState<string>('project_default');
+
+  const currentProject = useMemo(
+    () => projects.find(p => p.id === currentProjectId) ?? projects[0],
+    [projects, currentProjectId]
+  );
+
+  // --- ETAT UI (global, non rattaché à un projet) ---
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [previewAsset, setPreviewAsset] = useState<Asset | null>(null);
-  const [currentView, setCurrentView] = useState<ViewMode>('video');
   const [activeTool, setActiveTool] = useState<ToolMode>('select');
   const [zoomLevel, setZoomLevel] = useState(1);
   const [selectedClipId, setSelectedClipId] = useState<string | null>(null);
 
   const PX_PER_SEC_BASE = 30;
-  const [projectSettings] = useState<ProjectSettings>({ width: 1920, height: 1080, fps: 30 });
 
-  const [clips, setClips] = useState<Clip[]>([
-    { id: 'asset_1', name: 'rush_vacances.mp4', type: 'video', track: 1, start: 100, width: 250, src: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4' },
-    { id: 'asset_2', name: 'background_loop.mp3', type: 'audio', track: 2, start: 400, width: 300, src: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3' }
-  ]);
+  // --- HELPERS POUR MUTER LE PROJET COURANT ---
+  const updateCurrentProject = useCallback((updater: (p: Project) => Project) => {
+    setProjects(prev => prev.map(p => p.id === currentProjectId ? updater(p) : p));
+  }, [currentProjectId]);
 
-  const [tracks, setTracks] = useState<Track[]>([
-    { id: 1, type: 'video', name: 'Video 1' },
-    { id: 2, type: 'audio', name: 'Audio 1' }
-  ]);
+  const setClips = useCallback<Dispatch<SetStateAction<Clip[]>>>((action) => {
+    updateCurrentProject(p => ({
+      ...p,
+      clips: typeof action === 'function' ? (action as (prev: Clip[]) => Clip[])(p.clips) : action
+    }));
+  }, [updateCurrentProject]);
+
+  const setAssets = useCallback<Dispatch<SetStateAction<Asset[]>>>((action) => {
+    updateCurrentProject(p => ({
+      ...p,
+      assets: typeof action === 'function' ? (action as (prev: Asset[]) => Asset[])(p.assets) : action
+    }));
+  }, [updateCurrentProject]);
 
   const addTrack = useCallback((type: 'video' | 'audio') => {
-    setTracks(prev => {
-      const maxId = Math.max(...prev.map(t => t.id), 0);
-      const count = prev.filter(t => t.type === type).length + 1;
-      return [...prev, {
-        id: maxId + 1,
-        type,
-        name: `${type === 'video' ? 'Video' : 'Audio'} ${count}`
-      }];
+    updateCurrentProject(p => {
+      const maxId = Math.max(...p.tracks.map(t => t.id), 0);
+      const count = p.tracks.filter(t => t.type === type).length + 1;
+      return {
+        ...p,
+        tracks: [...p.tracks, {
+          id: maxId + 1,
+          type,
+          name: `${type === 'video' ? 'Video' : 'Audio'} ${count}`
+        }]
+      };
     });
+  }, [updateCurrentProject]);
+
+  const setCurrentView = useCallback((view: ViewMode) => {
+    updateCurrentProject(p => ({ ...p, currentView: view }));
+  }, [updateCurrentProject]);
+
+  // --- GESTION MULTI-PROJETS ---
+  const createProject = useCallback((name?: string) => {
+    const id = `project_${Date.now()}`;
+    let projectName = name?.trim() || '';
+    if (!projectName) {
+      // Calcule un nom unique
+      setProjects(prev => {
+        const baseName = 'Nouveau Projet';
+        let n = prev.length + 1;
+        let candidate = `${baseName} ${n}`;
+        while (prev.some(p => p.name === candidate)) {
+          n += 1;
+          candidate = `${baseName} ${n}`;
+        }
+        return [...prev, { ...buildEmptyProject(id, candidate) }];
+      });
+    } else {
+      setProjects(prev => [...prev, { ...buildEmptyProject(id, projectName) }]);
+    }
+    setCurrentProjectId(id);
+    setSelectedClipId(null);
+    setCurrentTime(0);
+    setIsPlaying(false);
+    return id;
   }, []);
 
-  // --- MOTEUR DE LECTURE HAUTE PRÉCISION (OPTIMISÉ) ---
+  const selectProject = useCallback((id: string) => {
+    setCurrentProjectId(id);
+    setSelectedClipId(null);
+    setCurrentTime(0);
+    setIsPlaying(false);
+  }, []);
+
+  const renameProject = useCallback((id: string, name: string) => {
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    setProjects(prev => prev.map(p => p.id === id ? { ...p, name: trimmed } : p));
+  }, []);
+
+  // --- MOTEUR DE LECTURE HAUTE PRÉCISION ---
   const requestRef = useRef<number | null>(null);
   const startTimeRef = useRef<number>(0);
   const baseTimeRef = useRef<number>(0);
-
-  // ✅ NOUVEAU: Ref pour le temps courant (pas de re-render)
   const currentTimeRef = useRef<number>(0);
-  // ✅ NOUVEAU: Subscribers pour les composants qui veulent suivre le temps
   const timeSubscribersRef = useRef<Set<TimeSubscriber>>(new Set());
 
-  // ✅ Fonction d'abonnement stable
   const subscribeToTime = useCallback((callback: TimeSubscriber) => {
     timeSubscribersRef.current.add(callback);
-    // Appeler immédiatement avec la valeur actuelle
     callback(currentTimeRef.current);
     return () => {
       timeSubscribersRef.current.delete(callback);
     };
   }, []);
 
-  // Synchroniser le ref quand le state change (pour scrubbing)
   useEffect(() => {
     currentTimeRef.current = currentTime;
   }, [currentTime]);
 
-  const togglePlay = () => {
-    if (!isPlaying) {
-      startTimeRef.current = performance.now();
-      baseTimeRef.current = currentTimeRef.current;
-    }
-    setIsPlaying(!isPlaying);
-  };
+  const togglePlay = useCallback(() => {
+    setIsPlaying(prev => {
+      if (!prev) {
+        startTimeRef.current = performance.now();
+        baseTimeRef.current = currentTimeRef.current;
+      }
+      return !prev;
+    });
+  }, []);
 
   useEffect(() => {
     let frameCount = 0;
-    const UI_UPDATE_INTERVAL = 10; // Mettre à jour l'UI toutes les 10 frames (~6x/sec)
+    const UI_UPDATE_INTERVAL = 10;
 
     const update = (now: number) => {
       if (isPlaying) {
         const elapsedSeconds = (now - startTimeRef.current) / 1000;
         const newTime = baseTimeRef.current + (elapsedSeconds * PX_PER_SEC_BASE);
 
-        // ✅ Toujours mettre à jour le ref (pour vidéo/audio)
         currentTimeRef.current = newTime;
-
-        // ✅ Notifier les subscribers (playhead, sync vidéo) sans re-render
         timeSubscribersRef.current.forEach(callback => callback(newTime));
 
-        // ✅ Mettre à jour le state moins fréquemment (pour l'affichage du temps)
         frameCount++;
         if (frameCount >= UI_UPDATE_INTERVAL) {
           frameCount = 0;
@@ -189,7 +301,6 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     if (isPlaying) {
       requestRef.current = requestAnimationFrame(update);
     } else {
-      // Nettoyage si on met en pause - synchroniser le state final
       setCurrentTime(currentTimeRef.current);
       if (requestRef.current) cancelAnimationFrame(requestRef.current);
     }
@@ -201,12 +312,17 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
 
   return (
     <ProjectContext.Provider value={{
+      projects, currentProjectId, currentProject,
+      createProject, selectProject, renameProject,
       isPlaying, togglePlay, currentTime, setCurrentTime,
       currentTimeRef, subscribeToTime,
-      clips, setClips,
-      tracks, addTrack,
+      clips: currentProject.clips, setClips,
+      tracks: currentProject.tracks, addTrack,
+      assets: currentProject.assets, setAssets,
       previewAsset, setPreviewAsset, scale: PX_PER_SEC_BASE * zoomLevel,
-      projectSettings, currentView, setCurrentView, activeTool, setActiveTool,
+      projectSettings: currentProject.projectSettings,
+      currentView: currentProject.currentView, setCurrentView,
+      activeTool, setActiveTool,
       zoomLevel, setZoomLevel, selectedClipId, setSelectedClipId
     }}>
       {children}
