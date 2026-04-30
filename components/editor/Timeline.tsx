@@ -23,6 +23,7 @@ export default function Timeline() {
     selectedClipId,
     setSelectedClipId,
     isPlaying,
+    togglePlay,
     subscribeToTime,
     currentTimeRef,
     tracks,
@@ -68,10 +69,20 @@ export default function Timeline() {
     return bestPos;
   }, [clips, currentTimeRef, SNAP_THRESHOLD]);
 
-  // --- GESTION DE LA SUPPRESSION ---
+  // --- GESTION CLAVIER (Suppression + Play/Pause via Espace) ---
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+      const target = e.target as HTMLElement | null;
+      if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) return;
+      if (target?.isContentEditable) return;
+
+      // Barre d'espace : Play / Pause sur la Timeline
+      if (e.code === 'Space' || e.key === ' ') {
+        e.preventDefault();
+        togglePlay();
+        return;
+      }
+
       if ((e.key === 'Delete' || e.key === 'Backspace') && selectedClipId) {
         setClips(prev => prev.filter(c => c.id !== selectedClipId));
         setSelectedClipId(null);
@@ -79,7 +90,7 @@ export default function Timeline() {
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [selectedClipId, setClips, setSelectedClipId]);
+  }, [selectedClipId, setClips, setSelectedClipId, togglePlay]);
 
   // --- BLOCAGE ZOOM CHROME ---
   useEffect(() => {
