@@ -249,6 +249,50 @@ export default function Timeline() {
     setActiveTool('select');
   };
 
+  // --- PAN HORIZONTAL (drag dans la zone des pistes, sous la règle) ---
+  const handlePanPointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
+    if (e.button !== 0) return;
+    if (draggingClipId) return;
+    if (!timelineRef.current) return;
+
+    // Sur tactile, le navigateur gère déjà le pan-x nativement (plus fluide).
+    // Notre handler ne sert que pour la souris et le stylet.
+    if (e.pointerType === 'touch') return;
+
+    // Outil texte : on garde le comportement de création au clic
+    if (activeTool === 'text') {
+      handleAddTextClip(e.clientX);
+      return;
+    }
+
+    // Désélectionne le clip si on clique dans le vide
+    if (e.target === e.currentTarget) setSelectedClipId(null);
+
+    const startX = e.clientX;
+    const container = timelineRef.current;
+    const startScroll = container.scrollLeft;
+
+    const target = e.currentTarget;
+    let panning = false;
+    try { target.setPointerCapture(e.pointerId); } catch {}
+
+    const onMove = (ev: PointerEvent) => {
+      const dx = ev.clientX - startX;
+      // Active le pan dès qu'on bouge un peu (évite de bloquer un clic simple)
+      if (!panning && Math.abs(dx) > 3) panning = true;
+      if (panning) container.scrollLeft = startScroll - dx;
+    };
+    const onUp = () => {
+      try { target.releasePointerCapture(e.pointerId); } catch {}
+      target.removeEventListener('pointermove', onMove);
+      target.removeEventListener('pointerup', onUp);
+      target.removeEventListener('pointercancel', onUp);
+    };
+    target.addEventListener('pointermove', onMove);
+    target.addEventListener('pointerup', onUp);
+    target.addEventListener('pointercancel', onUp);
+  };
+
   // --- SCRUBBING (Pointer Events) ---
   const handleScrubPointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
     // primary = left mouse / touch / pen tip — on rejette tout le reste
@@ -384,10 +428,14 @@ export default function Timeline() {
         style={{ touchAction: 'pan-x' }}
         onDragOver={handleDragOver}
         onDrop={handleDrop}
-        onPointerDown={handleScrubPointerDown}
+        onPointerDown={handlePanPointerDown}
       >
-        {/* RÈGLE */}
-        <div className="h-6 bg-gray-950 sticky top-0 border-b border-gray-800 flex items-end z-30 min-w-[10000px]">
+        {/* RÈGLE — clic ici déplace la tête de lecture */}
+        <div
+          className="h-6 bg-gray-950 sticky top-0 border-b border-gray-800 flex items-end z-30 min-w-[10000px] cursor-ew-resize"
+          style={{ touchAction: 'none' }}
+          onPointerDown={(e) => { e.stopPropagation(); handleScrubPointerDown(e); }}
+        >
           {rulerMarks}
         </div>
 
