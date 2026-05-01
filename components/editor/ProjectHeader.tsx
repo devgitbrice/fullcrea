@@ -2,6 +2,7 @@
 
 import { useProject } from '@/components/ProjectContext';
 import { Settings, Monitor, RectangleHorizontal, RectangleVertical, Square } from 'lucide-react';
+import ExportButton from './ExportButton';
 
 interface FormatPreset {
   label: string;
@@ -81,6 +82,8 @@ export default function ProjectHeader() {
             <Settings size={14} />
           </button>
         </div>
+
+        <ExportButton />
       </div>
     </div>
   );

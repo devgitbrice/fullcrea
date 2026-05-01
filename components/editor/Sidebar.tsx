@@ -4,6 +4,7 @@ import { useRef, ChangeEvent, useState } from 'react';
 import { Upload, Piano, Wand2, FolderOpen, AlertTriangle, Cloud, CloudOff, HardDrive, X, LogOut } from 'lucide-react';
 import DraggableAsset from './DraggableAsset';
 import ProjectSelector from './ProjectSelector';
+import { CreationSection } from './CreationModals';
 import { useProject } from '@/components/ProjectContext';
 import { getSupabase } from '@/lib/supabase/client';
 
@@ -156,6 +157,8 @@ export default function Sidebar() {
             )}
           </div>
         </div>
+
+        <CreationSection />
 
         {currentView === 'music' && (
           <div className="animate-in slide-in-from-left-4 duration-300">
