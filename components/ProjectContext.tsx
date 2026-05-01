@@ -75,6 +75,8 @@ export interface Project {
 
 type TimeSubscriber = (time: number) => void;
 
+export type PersistenceMode = 'cloud' | 'local' | 'local-fallback';
+
 interface ProjectContextType {
   // Multi-projets
   projects: Project[];
@@ -88,6 +90,8 @@ interface ProjectContextType {
   // Persistance
   isHydrated: boolean;
   isPersistenceCloud: boolean;
+  persistenceMode: PersistenceMode;
+  persistenceError: string | null;
   uploadAssetFile: (file: File) => Promise<Asset>;
 
   // Lecture
@@ -186,6 +190,8 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
   const projectsRef = useRef<Project[]>(projects);
   const [isHydrated, setIsHydrated] = useState(false);
   const [isPersistenceCloud, setIsPersistenceCloud] = useState(false);
+  const [persistenceMode, setPersistenceMode] = useState<PersistenceMode>('local');
+  const [persistenceError, setPersistenceError] = useState<string | null>(null);
 
   useEffect(() => {
     projectsRef.current = projects;
@@ -289,6 +295,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     let cancelled = false;
     const supabase = getSupabase();
     supabaseRef.current = supabase;
+    const supabaseConfigured = !!supabase;
 
     (async () => {
       // Tentative Supabase
@@ -305,18 +312,22 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
               setCurrentProjectId(fetched[0].id);
               knownProjectIdsRef.current = new Set(fetched.map(p => p.id));
             } else {
-              // Première utilisation : on pousse le projet par défaut en DB
               for (const p of projectsRef.current) {
                 await upsertProject(supabase, userId, p);
               }
               knownProjectIdsRef.current = new Set(projectsRef.current.map(p => p.id));
             }
             setIsPersistenceCloud(true);
+            setPersistenceMode('cloud');
+            setPersistenceError(null);
             setIsHydrated(true);
             return;
           }
+          // Supabase configuré mais auth a échoué
+          setPersistenceError("Auth Supabase indisponible. Active 'Anonymous Sign-Ins' dans Authentication → Providers.");
         } catch (e) {
           console.warn('[fullcrea] Hydratation Supabase échouée, fallback localStorage', e);
+          setPersistenceError(e instanceof Error ? e.message : 'Erreur Supabase');
         }
       }
 
@@ -336,7 +347,10 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
       } catch (e) {
         console.warn('[fullcrea] Lecture localStorage échouée', e);
       }
-      if (!cancelled) setIsHydrated(true);
+      if (!cancelled) {
+        setPersistenceMode(supabaseConfigured ? 'local-fallback' : 'local');
+        setIsHydrated(true);
+      }
     })();
 
     return () => { cancelled = true; };
@@ -391,20 +405,25 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
 
     const supabase = supabaseRef.current;
     const userId = userIdRef.current;
-    let src: string;
 
+    // Mode cloud : on échoue fort si l'upload ne marche pas. On NE retombe
+    // PAS sur un blob: URL silencieusement (qui serait filtré à la save).
     if (supabase && userId && currentProjectId) {
       const result = await uploadAsset(supabase, userId, currentProjectId, file);
-      src = result?.src ?? URL.createObjectURL(file);
-    } else {
-      src = URL.createObjectURL(file);
+      return {
+        id: `imported_${Date.now()}`,
+        name: file.name,
+        type,
+        src: result.src,
+      };
     }
 
+    // Mode local : blob URL, valide pour la session courante seulement.
     return {
       id: `imported_${Date.now()}`,
       name: file.name,
       type,
-      src,
+      src: URL.createObjectURL(file),
     };
   }, [currentProjectId]);
 
@@ -475,7 +494,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     <ProjectContext.Provider value={{
       projects, currentProjectId, currentProject,
       createProject, selectProject, renameProject, deleteProject,
-      isHydrated, isPersistenceCloud, uploadAssetFile,
+      isHydrated, isPersistenceCloud, persistenceMode, persistenceError, uploadAssetFile,
       isPlaying, togglePlay, currentTime, setCurrentTime,
       currentTimeRef, subscribeToTime,
       clips: currentProject.clips, setClips,
