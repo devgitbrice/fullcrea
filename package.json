@@ -9,6 +9,8 @@
     "lint": "next lint"
   },
   "dependencies": {
+    "@ffmpeg/ffmpeg": "^0.12.10",
+    "@ffmpeg/util": "^0.12.1",
     "@google/genai": "^1.0.0",
     "@supabase/supabase-js": "^2.105.1",
     "clsx": "^2.1.0",
