@@ -53,7 +53,7 @@ export type ToolMode = 'select' | 'cut' | 'text';
 
 export interface Track {
   id: number;
-  type: 'video' | 'audio';
+  type: 'video' | 'audio' | 'text';
   name: string;
 }
 
@@ -107,8 +107,10 @@ interface ProjectContextType {
   setClips: Dispatch<SetStateAction<Clip[]>>;
   tracks: Track[];
   addTrack: (type: 'video' | 'audio') => void;
+  textTrackId: number;
   assets: Asset[];
   setAssets: Dispatch<SetStateAction<Asset[]>>;
+  setProjectSettings: (settings: ProjectSettings) => void;
 
   // UI
   previewAsset: Asset | null;
@@ -131,10 +133,33 @@ const DEFAULT_SETTINGS: ProjectSettings = { width: 1920, height: 1080, fps: 30 }
 const LOCAL_STORAGE_KEY = 'fullcrea_state_v1';
 const SAVE_DEBOUNCE_MS = 600;
 
+// La piste texte est dédiée, séparée des pistes vidéo/audio.
+// On lui donne l'id 0 (réservé) pour qu'elle reste stable.
+export const TEXT_TRACK_ID = 0;
+
 const buildDefaultTracks = (): Track[] => [
+  { id: TEXT_TRACK_ID, type: 'text', name: 'Texte' },
   { id: 1, type: 'video', name: 'Video 1' },
   { id: 2, type: 'audio', name: 'Audio 1' }
 ];
+
+// Pour les projets historiques (avant l'introduction de la piste texte) :
+// on garantit qu'une piste 'text' existe et on y rapatrie les clips texte.
+function ensureTextTrack(project: Project): Project {
+  const hasTextTrack = project.tracks.some(t => t.type === 'text');
+  let tracks = project.tracks;
+  if (!hasTextTrack) {
+    const textTrackId = tracks.some(t => t.id === TEXT_TRACK_ID)
+      ? Math.min(...tracks.map(t => t.id), 0) - 1
+      : TEXT_TRACK_ID;
+    tracks = [{ id: textTrackId, type: 'text', name: 'Texte' }, ...tracks];
+  }
+  const textTrack = tracks.find(t => t.type === 'text')!;
+  const clips = project.clips.map(c =>
+    c.type === 'text' && c.track !== textTrack.id ? { ...c, track: textTrack.id } : c
+  );
+  return { ...project, tracks, clips };
+}
 
 const buildEmptyProject = (id: string, name: string): Project => ({
   id,
@@ -235,6 +260,10 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     updateCurrentProject(p => ({ ...p, currentView: view }));
   }, [updateCurrentProject]);
 
+  const setProjectSettings = useCallback((settings: ProjectSettings) => {
+    updateCurrentProject(p => ({ ...p, projectSettings: settings }));
+  }, [updateCurrentProject]);
+
   // --- GESTION MULTI-PROJETS ---
   const createProject = useCallback((name?: string) => {
     const id = `project_${Date.now()}`;
@@ -305,7 +334,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
           if (cancelled) return;
           if (userId) {
             userIdRef.current = userId;
-            const fetched = await fetchAllProjects(supabase, userId);
+            const fetched = (await fetchAllProjects(supabase, userId)).map(ensureTextTrack);
             if (cancelled) return;
             if (fetched.length > 0) {
               setProjects(fetched);
@@ -337,10 +366,11 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
         if (raw) {
           const parsed = JSON.parse(raw) as { projects?: Project[]; currentProjectId?: string };
           if (parsed.projects && Array.isArray(parsed.projects) && parsed.projects.length > 0) {
+            const migrated = parsed.projects.map(ensureTextTrack);
             if (!cancelled) {
-              setProjects(parsed.projects);
-              setCurrentProjectId(parsed.currentProjectId ?? parsed.projects[0].id);
-              knownProjectIdsRef.current = new Set(parsed.projects.map(p => p.id));
+              setProjects(migrated);
+              setCurrentProjectId(parsed.currentProjectId ?? migrated[0].id);
+              knownProjectIdsRef.current = new Set(migrated.map(p => p.id));
             }
           }
         }
@@ -503,9 +533,10 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
       currentTimeRef, subscribeToTime,
       clips: currentProject.clips, setClips,
       tracks: currentProject.tracks, addTrack,
+      textTrackId: (currentProject.tracks.find(t => t.type === 'text')?.id ?? TEXT_TRACK_ID),
       assets: currentProject.assets, setAssets,
       previewAsset, setPreviewAsset, scale: PX_PER_SEC_BASE * zoomLevel,
-      projectSettings: currentProject.projectSettings,
+      projectSettings: currentProject.projectSettings, setProjectSettings,
       currentView: currentProject.currentView, setCurrentView,
       activeTool, setActiveTool,
       zoomLevel, setZoomLevel, selectedClipId, setSelectedClipId
