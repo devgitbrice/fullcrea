@@ -49,7 +49,7 @@ export async function POST(req: NextRequest) {
     const pcm = Buffer.from(data, 'base64');
     const wav = pcmToWav(new Uint8Array(pcm), 24000);
 
-    return new Response(wav, {
+    return new Response(new Blob([new Uint8Array(wav)], { type: 'audio/wav' }), {
       status: 200,
       headers: {
         'Content-Type': 'audio/wav',
