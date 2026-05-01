@@ -374,8 +374,12 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
             await deleteProjectRow(supabase, id);
           }
           knownProjectIdsRef.current = currentIds;
+          // Reset l'erreur si la sauvegarde réussit après un échec précédent
+          setPersistenceError(null);
         } catch (e) {
-          console.warn('[fullcrea] Sauvegarde Supabase échouée', e);
+          const msg = e instanceof Error ? e.message : String(e);
+          console.error('[fullcrea] Sauvegarde Supabase échouée', e);
+          setPersistenceError(`Sauvegarde échouée : ${msg}`);
         }
       } else {
         try {

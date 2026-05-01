@@ -114,6 +114,17 @@ export default function Sidebar() {
           </div>
         )}
 
+        {/* Erreur de sauvegarde DB (mode cloud actif mais une write a échoué) */}
+        {persistenceMode === 'cloud' && persistenceError && (
+          <div className="text-xs text-red-300 bg-red-950/60 border border-red-900 rounded p-2 flex items-start gap-2">
+            <AlertTriangle size={14} className="shrink-0 mt-0.5 text-red-400" />
+            <div className="flex-1 min-w-0">
+              <div className="font-semibold text-red-200 mb-0.5">Sauvegarde DB échouée</div>
+              <div className="break-words leading-snug">{persistenceError}</div>
+            </div>
+          </div>
+        )}
+
         {/* Mode local pur (pas de Supabase configuré) — info subtile sur les imports */}
         {persistenceMode === 'local' && (
           <div className="text-[11px] text-gray-500 leading-snug">
