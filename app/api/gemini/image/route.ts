@@ -37,8 +37,10 @@ export async function POST(req: NextRequest) {
 
     const mime = imagePart.inlineData.mimeType ?? 'image/png';
     const bytes = Buffer.from(imagePart.inlineData.data, 'base64');
+    const ab = new ArrayBuffer(bytes.byteLength);
+    new Uint8Array(ab).set(bytes);
 
-    return new Response(new Blob([new Uint8Array(bytes)], { type: mime }), {
+    return new Response(new Blob([ab], { type: mime }), {
       status: 200,
       headers: {
         'Content-Type': mime,

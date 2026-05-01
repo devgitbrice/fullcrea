@@ -211,5 +211,9 @@ export async function renderProjectToMp4({
   report('Terminé', 100);
   // data peut être Uint8Array | string ; ici on est binaire.
   const bytes = data as Uint8Array;
-  return new Blob([bytes], { type: 'video/mp4' });
+  // Copie dans un ArrayBuffer "pur" (le typage Uint8Array.buffer peut être SharedArrayBuffer
+  // selon le build TS strict ; on évite l'erreur de typage Blob).
+  const ab = new ArrayBuffer(bytes.byteLength);
+  new Uint8Array(ab).set(bytes);
+  return new Blob([ab], { type: 'video/mp4' });
 }
