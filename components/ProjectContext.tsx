@@ -352,11 +352,11 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
             setIsHydrated(true);
             return;
           }
-          // Supabase configuré mais auth a échoué
-          setPersistenceError("Auth Supabase indisponible. Active 'Anonymous Sign-Ins' dans Authentication → Providers.");
+          // Pas de session active (cas rare : race avec AuthGate)
+          setPersistenceError("Session Supabase introuvable. Reconnecte-toi.");
         } catch (e) {
           console.warn('[fullcrea] Hydratation Supabase échouée, fallback localStorage', e);
-          setPersistenceError(e instanceof Error ? e.message : 'Erreur Supabase');
+          setPersistenceError(e instanceof Error ? e.message : (typeof e === 'object' && e && 'message' in e ? String((e as { message: unknown }).message) : 'Erreur Supabase'));
         }
       }
 
@@ -407,7 +407,9 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
           // Reset l'erreur si la sauvegarde réussit après un échec précédent
           setPersistenceError(null);
         } catch (e) {
-          const msg = e instanceof Error ? e.message : String(e);
+          const msg = e instanceof Error
+            ? e.message
+            : (typeof e === 'object' && e && 'message' in e ? String((e as { message: unknown }).message) : 'erreur inconnue');
           console.error('[fullcrea] Sauvegarde Supabase échouée', e);
           setPersistenceError(`Sauvegarde échouée : ${msg}`);
         }

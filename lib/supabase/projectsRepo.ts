@@ -4,6 +4,13 @@ import { SupabaseClient } from '@supabase/supabase-js';
 import type { Project, Asset, Track, Clip } from '@/components/ProjectContext';
 import { STORAGE_BUCKET } from './client';
 
+// Supabase renvoie des PostgrestError qui ne sont PAS des Error.
+// On les transforme pour avoir un message lisible côté UI.
+function pgError(prefix: string, err: { message?: string; details?: string; hint?: string; code?: string }): Error {
+  const parts = [err.message, err.details, err.hint, err.code ? `(code ${err.code})` : null].filter(Boolean);
+  return new Error(`${prefix}: ${parts.join(' — ') || 'erreur inconnue'}`);
+}
+
 // --- Lecture ---
 
 export async function fetchAllProjects(supabase: SupabaseClient, userId: string): Promise<Project[]> {
@@ -13,7 +20,8 @@ export async function fetchAllProjects(supabase: SupabaseClient, userId: string)
     .eq('user_id', userId)
     .order('created_at', { ascending: true });
 
-  if (error || !projectRows || projectRows.length === 0) return [];
+  if (error) throw pgError('Lecture fullcrea_projects échouée', error);
+  if (!projectRows || projectRows.length === 0) return [];
 
   const ids = projectRows.map((p) => p.id);
 
@@ -95,7 +103,7 @@ export async function upsertProject(
     name: p.name,
     current_view: p.currentView,
   });
-  if (pErr) throw pErr;
+  if (pErr) throw pgError('Écriture fullcrea_projects échouée', pErr);
 
   const { error: sErr } = await supabase.from('fullcrea_project_settings').upsert({
     project_id: p.id,
@@ -103,7 +111,7 @@ export async function upsertProject(
     height: p.projectSettings.height,
     fps: p.projectSettings.fps,
   });
-  if (sErr) throw sErr;
+  if (sErr) throw pgError('Écriture fullcrea_project_settings échouée', sErr);
 
   // Clips d'abord (FK vers tracks), puis tracks
   await supabase.from('fullcrea_clips').delete().eq('project_id', p.id);
@@ -118,7 +126,7 @@ export async function upsertProject(
         name: t.name,
       }))
     );
-    if (tErr) throw tErr;
+    if (tErr) throw pgError('Écriture fullcrea_tracks échouée', tErr);
   }
 
   if (p.clips.length > 0) {
@@ -139,7 +147,7 @@ export async function upsertProject(
         text_color: c.textColor ?? null,
       }))
     );
-    if (cErr) throw cErr;
+    if (cErr) throw pgError('Écriture fullcrea_clips échouée', cErr);
   }
 
   // Assets : on filtre les blob: URLs (créées via URL.createObjectURL),
@@ -156,7 +164,7 @@ export async function upsertProject(
         src: a.src,
       }))
     );
-    if (aErr) throw aErr;
+    if (aErr) throw pgError('Écriture fullcrea_assets échouée', aErr);
   }
 }
 
