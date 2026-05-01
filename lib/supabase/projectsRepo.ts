@@ -181,10 +181,29 @@ export async function uploadAsset(
     .from(STORAGE_BUCKET)
     .upload(path, file, { upsert: false, contentType: file.type || undefined });
   if (error) {
-    // On lève l'erreur pour qu'elle remonte à l'UI au lieu de tomber silencieusement
-    // sur un blob: URL qui ne sera jamais persisté.
     throw new Error(`Storage upload failed: ${error.message}`);
   }
   const { data } = supabase.storage.from(STORAGE_BUCKET).getPublicUrl(path);
+
+  // Vérifie que l'URL publique fonctionne. Si le bucket n'est pas marqué Public,
+  // l'upload réussit mais l'URL retourne 400/404 → le fichier serait inutilisable
+  // après un reload. On échoue ici pour le détecter.
+  try {
+    const probe = await fetch(data.publicUrl, { method: 'HEAD' });
+    if (!probe.ok) {
+      throw new Error(
+        `Le fichier a été uploadé mais l'URL publique renvoie HTTP ${probe.status}. ` +
+        `Vérifie que le bucket 'fullcrea-assets' est marqué Public dans Supabase → Storage.`
+      );
+    }
+  } catch (probeErr) {
+    if (probeErr instanceof TypeError) {
+      // Erreur réseau (CORS, offline) — on laisse passer plutôt que de bloquer
+      console.warn('[fullcrea] HEAD probe a échoué (réseau)', probeErr);
+    } else {
+      throw probeErr;
+    }
+  }
+
   return { src: data.publicUrl, storagePath: path };
 }
