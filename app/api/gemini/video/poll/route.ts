@@ -3,6 +3,29 @@ import { NextRequest } from 'next/server';
 export const runtime = 'nodejs';
 export const maxDuration = 30;
 
+// Cherche récursivement un champ string `uri` ou `videoUri` dans l'objet réponse Veo.
+// Veo a plusieurs formes selon la version : generatedVideos[].video.uri,
+// generateVideoResponse.generatedSamples[].video.uri, etc.
+function findVideoUri(obj: unknown): string | null {
+  if (!obj || typeof obj !== 'object') return null;
+  const seen = new Set<unknown>();
+  const stack: unknown[] = [obj];
+  while (stack.length) {
+    const cur = stack.pop();
+    if (!cur || typeof cur !== 'object' || seen.has(cur)) continue;
+    seen.add(cur);
+    const rec = cur as Record<string, unknown>;
+    for (const [k, v] of Object.entries(rec)) {
+      if (typeof v === 'string' && (k === 'uri' || k === 'videoUri') &&
+          v.startsWith('https://generativelanguage.googleapis.com/')) {
+        return v;
+      }
+      if (v && typeof v === 'object') stack.push(v);
+    }
+  }
+  return null;
+}
+
 // Polling via REST direct — plus fiable que de re-sérialiser l'objet Operation
 // du SDK (qui perd ses méthodes de classe au passage JSON).
 export async function POST(req: NextRequest) {
@@ -35,17 +58,26 @@ export async function POST(req: NextRequest) {
       return Response.json({ error: msg }, { status: 502 });
     }
 
-    // Réponse Veo : { name, done, response: { generateVideoResponse: { generatedSamples: [{ video: { uri } }] } } }
-    // ou (selon version) generatedVideos[0].video.uri
+    // La forme exacte de la réponse Veo varie selon la version du modèle.
+    // On cherche un champ "uri" récursivement sous response/*.
     const done = !!json.done;
     let videoUri: string | null = null;
     if (done) {
-      const r = json.response ?? {};
-      videoUri =
-        r?.generateVideoResponse?.generatedSamples?.[0]?.video?.uri ??
-        r?.generatedVideos?.[0]?.video?.uri ??
-        r?.generated_videos?.[0]?.video?.uri ??
-        null;
+      videoUri = findVideoUri(json.response);
+    }
+
+    if (done && !videoUri) {
+      // On renvoie la réponse brute pour diagnostic côté client.
+      console.error('[veo] done sans videoUri, réponse brute :', JSON.stringify(json, null, 2));
+      return Response.json(
+        {
+          done,
+          videoUri: null,
+          error: 'Veo a terminé mais aucune URI vidéo trouvée. Voir logs serveur pour la structure de la réponse.',
+          raw: json,
+        },
+        { status: 200 },
+      );
     }
 
     return Response.json({ done, videoUri });

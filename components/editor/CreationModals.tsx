@@ -171,6 +171,7 @@ export function VideoGenerationModal({ onClose }: { onClose: () => void }) {
       let elapsed = 0;
       let done = false;
       let videoUri: string | null = null;
+      let lastRaw: unknown = null;
       while (!done) {
         await new Promise((r) => setTimeout(r, 5000));
         elapsed += 5;
@@ -184,9 +185,13 @@ export function VideoGenerationModal({ onClose }: { onClose: () => void }) {
         const data = await pollRes.json();
         done = !!data.done;
         videoUri = data.videoUri ?? null;
+        lastRaw = data.raw ?? null;
       }
 
-      if (!videoUri) throw new Error('Aucune vidéo dans la réponse Veo');
+      if (!videoUri) {
+        if (lastRaw) console.error('[fullcrea] Veo done sans uri, brut :', lastRaw);
+        throw new Error('Veo a terminé mais aucune URI vidéo n\'a été trouvée. Vérifie la console serveur pour la structure de la réponse.');
+      }
 
       setStatus('Téléchargement…');
       const dlRes = await fetch('/api/gemini/video/download', {
