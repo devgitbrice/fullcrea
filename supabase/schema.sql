@@ -57,10 +57,27 @@ CREATE TABLE IF NOT EXISTS fullcrea_tracks (
     project_id   TEXT NOT NULL
                   REFERENCES fullcrea_projects(id) ON DELETE CASCADE,
     track_index  INTEGER NOT NULL,
-    type         TEXT NOT NULL CHECK (type IN ('video', 'audio')),
+    type         TEXT NOT NULL CHECK (type IN ('video', 'audio', 'text')),
     name         TEXT NOT NULL,
     PRIMARY KEY (project_id, track_index)
 );
+
+-- Migration : si la table existait déjà avec l'ancien CHECK, on l'élargit pour inclure 'text'.
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM information_schema.table_constraints
+        WHERE table_name = 'fullcrea_tracks'
+          AND constraint_name = 'fullcrea_tracks_type_check'
+    ) THEN
+        ALTER TABLE fullcrea_tracks DROP CONSTRAINT fullcrea_tracks_type_check;
+    END IF;
+    ALTER TABLE fullcrea_tracks
+        ADD CONSTRAINT fullcrea_tracks_type_check
+        CHECK (type IN ('video', 'audio', 'text'));
+EXCEPTION WHEN duplicate_object THEN
+    NULL; -- déjà appliqué
+END $$;
 
 
 -- =====================================================

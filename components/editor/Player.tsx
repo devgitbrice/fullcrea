@@ -5,7 +5,7 @@ import { Play, Pause, SkipBack, SkipForward, Video, Music, AlertCircle } from 'l
 import { useProject, Clip, defaultImageTransform } from '@/components/ProjectContext';
 
 export default function Player() {
-  const { isPlaying, togglePlay, currentTime, clips, setCurrentTime, scale, currentView, subscribeToTime, currentTimeRef } = useProject();
+  const { isPlaying, togglePlay, currentTime, clips, setCurrentTime, scale, currentView, subscribeToTime, currentTimeRef, projectSettings } = useProject();
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
@@ -134,7 +134,16 @@ export default function Player() {
       {/* ÉCRAN VISUEL (Seulement en mode Vidéo) */}
       {isVideoMode && (
         <div className="flex-1 flex flex-col items-center justify-center bg-gray-900 p-6 overflow-hidden relative z-0">
-            <div className="aspect-video w-full max-w-3xl bg-black shadow-2xl flex items-center justify-center relative overflow-hidden border border-gray-800 rounded-sm z-0">
+            <div
+              className="bg-black shadow-2xl flex items-center justify-center relative overflow-hidden border border-gray-800 rounded-sm z-0"
+              style={{
+                aspectRatio: `${projectSettings.width} / ${projectSettings.height}`,
+                maxHeight: '100%',
+                maxWidth: '100%',
+                width: 'auto',
+                height: '100%',
+              }}
+            >
             
             {activeVideoClip ? (
                 <div className="w-full h-full relative bg-gray-800">
