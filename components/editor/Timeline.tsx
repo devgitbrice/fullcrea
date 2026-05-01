@@ -1,7 +1,7 @@
 "use client";
 
 import { useRef, DragEvent, useState, useEffect, PointerEvent as ReactPointerEvent, MouseEvent as ReactMouseEvent, useCallback, useMemo } from 'react';
-import { Music, Plus, Video, AudioLines, Type } from 'lucide-react';
+import { Music, Plus, Video, AudioLines, Type, X } from 'lucide-react';
 import { useProject, Clip } from '@/components/ProjectContext';
 import TimelineToolbar from './TimelineToolbar';
 import AudioWaveform from './AudioWaveform';
@@ -471,6 +471,26 @@ export default function Timeline() {
                     {clip.type === 'text' && <Type size={12} className="mr-2 shrink-0 opacity-50" />}
                     <span className="truncate drop-shadow-[0_1px_1px_rgba(0,0,0,0.6)]">{clip.name}</span>
                   </div>
+
+                  {/* Bouton de suppression (X rouge en haut à droite) */}
+                  <button
+                    type="button"
+                    onPointerDown={(e) => e.stopPropagation()}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      const label = clip.type === 'text' && clip.text ? `"${clip.text}"` : `"${clip.name}"`;
+                      if (window.confirm(`Êtes-vous sûr de vouloir supprimer ${label} ?`)) {
+                        setClips(prev => prev.filter(c => c.id !== clip.id));
+                        if (selectedClipId === clip.id) setSelectedClipId(null);
+                      }
+                    }}
+                    className="absolute top-0.5 right-0.5 w-5 h-5 rounded-full bg-red-600/90 hover:bg-red-500 text-white flex items-center justify-center z-30 shadow-md transition-transform active:scale-90 focus:outline-none focus:ring-2 focus:ring-red-400"
+                    style={{ touchAction: 'manipulation' }}
+                    title="Supprimer ce média"
+                    aria-label="Supprimer ce média"
+                  >
+                    <X size={11} strokeWidth={3} />
+                  </button>
                 </div>
               ))}
             </div>
