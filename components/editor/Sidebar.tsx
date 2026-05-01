@@ -1,18 +1,26 @@
 "use client";
 
-import { useRef, ChangeEvent } from 'react';
-import { Upload, Piano, Wand2, FolderOpen } from 'lucide-react';
+import { useRef, ChangeEvent, useState } from 'react';
+import { Upload, Piano, Wand2, FolderOpen, AlertTriangle, Cloud, CloudOff, HardDrive, X } from 'lucide-react';
 import DraggableAsset from './DraggableAsset';
 import ProjectSelector from './ProjectSelector';
 import { useProject } from '@/components/ProjectContext';
 
 export default function Sidebar() {
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  const [isUploading, setIsUploading] = useState(false);
 
-  // Les assets sont rattachés au projet courant (via le contexte)
-  const { setPreviewAsset, currentView, assets, setAssets, uploadAssetFile } = useProject();
+  const {
+    setPreviewAsset,
+    currentView,
+    assets,
+    setAssets,
+    uploadAssetFile,
+    persistenceMode,
+    persistenceError,
+  } = useProject();
 
-  // --- DONNÉES FACTICES (Pour l'exemple Music/Podcast) ---
   const instruments = [
     { name: 'Piano Grand', type: 'audio', src: '' },
     { name: 'Synthwave Bass', type: 'audio', src: '' },
@@ -31,13 +39,18 @@ export default function Sidebar() {
   const handleFileChange = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
-    // Reset le input pour permettre la ré-import du même fichier
     event.target.value = '';
+    setUploadError(null);
+    setIsUploading(true);
     try {
       const asset = await uploadAssetFile(file);
       setAssets((prev) => [...prev, asset]);
     } catch (e) {
-      console.warn('[fullcrea] Import échoué', e);
+      const msg = e instanceof Error ? e.message : 'Erreur inconnue';
+      setUploadError(msg);
+      console.error('[fullcrea] Import échoué', e);
+    } finally {
+      setIsUploading(false);
     }
   };
 
@@ -48,9 +61,9 @@ export default function Sidebar() {
       <div className="p-4 border-b border-gray-800 space-y-3">
         <div className="flex items-center justify-between">
           <h1 className="font-bold text-white text-lg tracking-tight">Studio Next</h1>
+          <PersistenceBadge mode={persistenceMode} />
         </div>
 
-        {/* Sélecteur de projet (haut à gauche) */}
         <ProjectSelector />
 
         <input
@@ -63,69 +76,133 @@ export default function Sidebar() {
 
         <button
           onClick={handleImportClick}
-          className="w-full flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-700 text-white py-2 rounded text-sm font-medium transition shadow-lg shadow-blue-900/20"
+          disabled={isUploading}
+          className="w-full flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-700 disabled:cursor-not-allowed text-white py-2 rounded text-sm font-medium transition shadow-lg shadow-blue-900/20"
         >
-          <Upload size={16} /> Importer Média
+          <Upload size={16} />
+          {isUploading ? 'Import en cours…' : 'Importer Média'}
         </button>
+
+        {/* Bandeau d'erreur d'upload */}
+        {uploadError && (
+          <div className="text-xs text-red-300 bg-red-950/60 border border-red-900 rounded p-2 flex items-start gap-2">
+            <AlertTriangle size={14} className="shrink-0 mt-0.5 text-red-400" />
+            <div className="flex-1 min-w-0">
+              <div className="font-semibold text-red-200 mb-0.5">Import échoué</div>
+              <div className="break-words">{uploadError}</div>
+            </div>
+            <button
+              onClick={() => setUploadError(null)}
+              className="text-red-400 hover:text-red-200 shrink-0"
+              title="Fermer"
+            >
+              <X size={12} />
+            </button>
+          </div>
+        )}
+
+        {/* Bandeau d'avertissement persistance dégradée */}
+        {persistenceMode === 'local-fallback' && (
+          <div className="text-[11px] text-amber-300 bg-amber-950/40 border border-amber-900 rounded p-2 flex items-start gap-2">
+            <AlertTriangle size={12} className="shrink-0 mt-0.5 text-amber-400" />
+            <div className="flex-1 min-w-0">
+              <div className="font-semibold text-amber-200 mb-0.5">Supabase configuré mais inactif</div>
+              <div className="break-words leading-snug">
+                {persistenceError ?? 'Sauvegarde en local seulement.'}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Mode local pur (pas de Supabase configuré) — info subtile sur les imports */}
+        {persistenceMode === 'local' && (
+          <div className="text-[11px] text-gray-500 leading-snug">
+            Mode local : les fichiers importés ne survivent pas à un reload.
+          </div>
+        )}
       </div>
 
       {/* --- CONTENU SCROLLABLE --- */}
       <div className="flex-1 overflow-y-auto p-2 space-y-6 custom-scrollbar">
 
-        {/* SECTION 1 : BIBLIOTHÈQUE (Toujours visible) */}
         <div>
-            <div className="flex items-center gap-2 text-xs font-semibold text-gray-500 uppercase px-2 mb-2">
-                <FolderOpen size={12} /> Fichiers Projet
-            </div>
-            <div className="space-y-1">
-                {assets.map((asset) => (
-                <div
-                    key={asset.id}
-                    onDoubleClick={() => setPreviewAsset(asset)}
-                    title="Double-cliquez pour prévisualiser"
-                >
-                    <DraggableAsset
-                        name={asset.name}
-                        type={asset.type}
-                        src={asset.src}
-                    />
-                </div>
-                ))}
-                {assets.length === 0 && (
-                    <div className="text-center text-xs text-gray-700 mt-4 italic">Vide</div>
-                )}
-            </div>
+          <div className="flex items-center gap-2 text-xs font-semibold text-gray-500 uppercase px-2 mb-2">
+            <FolderOpen size={12} /> Fichiers Projet
+          </div>
+          <div className="space-y-1">
+            {assets.map((asset) => (
+              <div
+                key={asset.id}
+                onDoubleClick={() => setPreviewAsset(asset)}
+                title="Double-cliquez pour prévisualiser"
+              >
+                <DraggableAsset name={asset.name} type={asset.type} src={asset.src} />
+              </div>
+            ))}
+            {assets.length === 0 && (
+              <div className="text-center text-xs text-gray-700 mt-4 italic">Vide</div>
+            )}
+          </div>
         </div>
 
-        {/* SECTION 2 : INSTRUMENTS (Visible en mode MUSIC uniquement) */}
         {currentView === 'music' && (
-           <div className="animate-in slide-in-from-left-4 duration-300">
-             <div className="flex items-center gap-2 text-xs font-semibold text-purple-400 uppercase px-2 mb-2 pt-2 border-t border-gray-800/50">
-               <Piano size={12} /> Instruments
-             </div>
-             <div className="space-y-1">
-               {instruments.map((inst, i) => (
-                 <DraggableAsset key={`inst_${i}`} name={inst.name} type="audio" src={inst.src} />
-               ))}
-             </div>
-           </div>
+          <div className="animate-in slide-in-from-left-4 duration-300">
+            <div className="flex items-center gap-2 text-xs font-semibold text-purple-400 uppercase px-2 mb-2 pt-2 border-t border-gray-800/50">
+              <Piano size={12} /> Instruments
+            </div>
+            <div className="space-y-1">
+              {instruments.map((inst, i) => (
+                <DraggableAsset key={`inst_${i}`} name={inst.name} type="audio" src={inst.src} />
+              ))}
+            </div>
+          </div>
         )}
 
-        {/* SECTION 3 : EFFETS (Visible en mode MUSIC ou PODCAST) */}
         {(currentView === 'music' || currentView === 'podcast') && (
-           <div className="animate-in slide-in-from-left-4 duration-300 delay-75">
-             <div className="flex items-center gap-2 text-xs font-semibold text-orange-400 uppercase px-2 mb-2 pt-2 border-t border-gray-800/50">
-               <Wand2 size={12} /> Effets Audio
-             </div>
-             <div className="space-y-1">
-               {effects.map((fx, i) => (
-                 <DraggableAsset key={`fx_${i}`} name={fx.name} type="audio" src={fx.src} />
-               ))}
-             </div>
-           </div>
+          <div className="animate-in slide-in-from-left-4 duration-300 delay-75">
+            <div className="flex items-center gap-2 text-xs font-semibold text-orange-400 uppercase px-2 mb-2 pt-2 border-t border-gray-800/50">
+              <Wand2 size={12} /> Effets Audio
+            </div>
+            <div className="space-y-1">
+              {effects.map((fx, i) => (
+                <DraggableAsset key={`fx_${i}`} name={fx.name} type="audio" src={fx.src} />
+              ))}
+            </div>
+          </div>
         )}
 
       </div>
     </div>
+  );
+}
+
+function PersistenceBadge({ mode }: { mode: 'cloud' | 'local' | 'local-fallback' }) {
+  if (mode === 'cloud') {
+    return (
+      <span
+        className="flex items-center gap-1 text-[10px] font-semibold text-emerald-400 bg-emerald-950/40 border border-emerald-900 rounded-full px-2 py-0.5"
+        title="Sauvegarde Supabase active"
+      >
+        <Cloud size={10} /> Cloud
+      </span>
+    );
+  }
+  if (mode === 'local-fallback') {
+    return (
+      <span
+        className="flex items-center gap-1 text-[10px] font-semibold text-amber-400 bg-amber-950/40 border border-amber-900 rounded-full px-2 py-0.5"
+        title="Supabase configuré mais inactif — fallback local"
+      >
+        <CloudOff size={10} /> Local
+      </span>
+    );
+  }
+  return (
+    <span
+      className="flex items-center gap-1 text-[10px] font-semibold text-gray-400 bg-gray-900 border border-gray-800 rounded-full px-2 py-0.5"
+      title="Sauvegarde dans le navigateur (localStorage)"
+    >
+      <HardDrive size={10} /> Local
+    </span>
   );
 }

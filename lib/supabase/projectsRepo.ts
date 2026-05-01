@@ -174,15 +174,16 @@ export async function uploadAsset(
   userId: string,
   projectId: string,
   file: File
-): Promise<{ src: string; storagePath: string } | null> {
+): Promise<{ src: string; storagePath: string }> {
   const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_');
   const path = `${userId}/${projectId}/${Date.now()}_${safeName}`;
   const { error } = await supabase.storage
     .from(STORAGE_BUCKET)
     .upload(path, file, { upsert: false, contentType: file.type || undefined });
   if (error) {
-    console.warn('[fullcrea] Upload Supabase a échoué', error.message);
-    return null;
+    // On lève l'erreur pour qu'elle remonte à l'UI au lieu de tomber silencieusement
+    // sur un blob: URL qui ne sera jamais persisté.
+    throw new Error(`Storage upload failed: ${error.message}`);
   }
   const { data } = supabase.storage.from(STORAGE_BUCKET).getPublicUrl(path);
   return { src: data.publicUrl, storagePath: path };
