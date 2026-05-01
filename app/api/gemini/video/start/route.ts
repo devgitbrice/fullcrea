@@ -4,7 +4,7 @@ import { GoogleGenAI } from '@google/genai';
 export const runtime = 'nodejs';
 export const maxDuration = 60;
 
-const MODEL = 'veo-3.0-generate-preview';
+const MODEL = 'veo-3.1-generate-preview';
 
 export async function POST(req: NextRequest) {
   const apiKey = process.env.GEMINI_API_KEY;
