@@ -10,7 +10,7 @@ export default function Sidebar() {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Les assets sont rattachés au projet courant (via le contexte)
-  const { setPreviewAsset, currentView, assets, setAssets } = useProject();
+  const { setPreviewAsset, currentView, assets, setAssets, uploadAssetFile } = useProject();
 
   // --- DONNÉES FACTICES (Pour l'exemple Music/Podcast) ---
   const instruments = [
@@ -28,25 +28,16 @@ export default function Sidebar() {
 
   const handleImportClick = () => fileInputRef.current?.click();
 
-  const handleFileChange = (event: ChangeEvent<HTMLInputElement>) => {
+  const handleFileChange = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
-    if (file) {
-      let type: 'video' | 'audio' | 'image' = 'image';
-
-      if (file.type.startsWith('video')) type = 'video';
-      else if (file.type.startsWith('audio')) type = 'audio';
-
-      const objectUrl = URL.createObjectURL(file);
-
-      setAssets((prev) => [
-        ...prev,
-        {
-          id: `imported_${Date.now()}`,
-          name: file.name,
-          type: type,
-          src: objectUrl
-        }
-      ]);
+    if (!file) return;
+    // Reset le input pour permettre la ré-import du même fichier
+    event.target.value = '';
+    try {
+      const asset = await uploadAssetFile(file);
+      setAssets((prev) => [...prev, asset]);
+    } catch (e) {
+      console.warn('[fullcrea] Import échoué', e);
     }
   };
 

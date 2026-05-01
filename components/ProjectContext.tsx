@@ -1,12 +1,15 @@
 "use client";
 
 import { createContext, useContext, useState, useEffect, useRef, ReactNode, Dispatch, SetStateAction, useCallback, useMemo, MutableRefObject } from 'react';
+import { SupabaseClient } from '@supabase/supabase-js';
+import { getSupabase, ensureSignedIn } from '@/lib/supabase/client';
+import { fetchAllProjects, upsertProject, deleteProjectRow, uploadAsset } from '@/lib/supabase/projectsRepo';
 
 // --- INTERFACES ---
 export interface ImageTransform {
   rotationX: number;
   rotationY: number;
-  rotationZ: number; // Rotation classique autour du centre
+  rotationZ: number;
   scaleX: number;
   scaleY: number;
   positionX: number;
@@ -31,9 +34,7 @@ export interface Clip {
   start: number;
   width: number;
   src: string;
-  // Propriétés de transformation pour les images
   transform?: ImageTransform;
-  // Propriétés pour les clips texte
   text?: string;
   fontSize?: number;
   fontFamily?: string;
@@ -62,7 +63,6 @@ export interface ProjectSettings {
   fps: number;
 }
 
-// Un projet contient TOUS les éléments d'interface qui lui sont rattachés
 export interface Project {
   id: string;
   name: string;
@@ -73,19 +73,24 @@ export interface Project {
   currentView: ViewMode;
 }
 
-// Type pour les subscribers du temps
 type TimeSubscriber = (time: number) => void;
 
 interface ProjectContextType {
-  // --- Multi-projets ---
+  // Multi-projets
   projects: Project[];
   currentProjectId: string;
   currentProject: Project;
   createProject: (name?: string) => string;
   selectProject: (id: string) => void;
   renameProject: (id: string, name: string) => void;
+  deleteProject: (id: string) => void;
 
-  // --- Lecture ---
+  // Persistance
+  isHydrated: boolean;
+  isPersistenceCloud: boolean;
+  uploadAssetFile: (file: File) => Promise<Asset>;
+
+  // Lecture
   isPlaying: boolean;
   togglePlay: () => void;
   currentTime: number;
@@ -93,7 +98,7 @@ interface ProjectContextType {
   currentTimeRef: MutableRefObject<number>;
   subscribeToTime: (callback: TimeSubscriber) => () => void;
 
-  // --- Données du projet courant (proxy) ---
+  // Données du projet courant (proxy)
   clips: Clip[];
   setClips: Dispatch<SetStateAction<Clip[]>>;
   tracks: Track[];
@@ -101,7 +106,7 @@ interface ProjectContextType {
   assets: Asset[];
   setAssets: Dispatch<SetStateAction<Asset[]>>;
 
-  // --- Etat UI global ---
+  // UI
   previewAsset: Asset | null;
   setPreviewAsset: (asset: Asset | null) => void;
   scale: number;
@@ -119,6 +124,8 @@ interface ProjectContextType {
 const ProjectContext = createContext<ProjectContextType | undefined>(undefined);
 
 const DEFAULT_SETTINGS: ProjectSettings = { width: 1920, height: 1080, fps: 30 };
+const LOCAL_STORAGE_KEY = 'fullcrea_state_v1';
+const SAVE_DEBOUNCE_MS = 600;
 
 const buildDefaultTracks = (): Track[] => [
   { id: 1, type: 'video', name: 'Video 1' },
@@ -135,24 +142,26 @@ const buildEmptyProject = (id: string, name: string): Project => ({
   currentView: 'video',
 });
 
+const buildInitialDefaultProject = (): Project => ({
+  id: 'project_default',
+  name: 'Mon Film 01',
+  clips: [
+    { id: 'clip_1', name: 'rush_vacances.mp4', type: 'video', track: 1, start: 100, width: 250, src: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4' },
+    { id: 'clip_2', name: 'background_loop.mp3', type: 'audio', track: 2, start: 400, width: 300, src: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3' }
+  ],
+  tracks: buildDefaultTracks(),
+  assets: [
+    { id: 'asset_1', name: 'rush_vacances.mp4', type: 'video', src: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4' },
+    { id: 'asset_2', name: 'background_loop.mp3', type: 'audio', src: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3' },
+    { id: 'asset_3', name: 'logo_final.png', type: 'image', src: 'https://images.unsplash.com/photo-1472214103451-9374bd1c798e?auto=format&fit=crop&w=1000&q=80' },
+  ],
+  projectSettings: { ...DEFAULT_SETTINGS },
+  currentView: 'video',
+});
+
 export function ProjectProvider({ children }: { children: ReactNode }) {
-  // --- MULTI-PROJETS ---
-  const [projects, setProjects] = useState<Project[]>(() => [{
-    id: 'project_default',
-    name: 'Mon Film 01',
-    clips: [
-      { id: 'clip_1', name: 'rush_vacances.mp4', type: 'video', track: 1, start: 100, width: 250, src: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4' },
-      { id: 'clip_2', name: 'background_loop.mp3', type: 'audio', track: 2, start: 400, width: 300, src: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3' }
-    ],
-    tracks: buildDefaultTracks(),
-    assets: [
-      { id: 'asset_1', name: 'rush_vacances.mp4', type: 'video', src: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4' },
-      { id: 'asset_2', name: 'background_loop.mp3', type: 'audio', src: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3' },
-      { id: 'asset_3', name: 'logo_final.png', type: 'image', src: 'https://images.unsplash.com/photo-1472214103451-9374bd1c798e?auto=format&fit=crop&w=1000&q=80' },
-    ],
-    projectSettings: { ...DEFAULT_SETTINGS },
-    currentView: 'video',
-  }]);
+  // --- ETAT MULTI-PROJETS ---
+  const [projects, setProjects] = useState<Project[]>(() => [buildInitialDefaultProject()]);
   const [currentProjectId, setCurrentProjectId] = useState<string>('project_default');
 
   const currentProject = useMemo(
@@ -169,6 +178,18 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
   const [selectedClipId, setSelectedClipId] = useState<string | null>(null);
 
   const PX_PER_SEC_BASE = 30;
+
+  // --- PERSISTANCE ---
+  const supabaseRef = useRef<SupabaseClient | null>(null);
+  const userIdRef = useRef<string | null>(null);
+  const knownProjectIdsRef = useRef<Set<string>>(new Set(['project_default']));
+  const projectsRef = useRef<Project[]>(projects);
+  const [isHydrated, setIsHydrated] = useState(false);
+  const [isPersistenceCloud, setIsPersistenceCloud] = useState(false);
+
+  useEffect(() => {
+    projectsRef.current = projects;
+  }, [projects]);
 
   // --- HELPERS POUR MUTER LE PROJET COURANT ---
   const updateCurrentProject = useCallback((updater: (p: Project) => Project) => {
@@ -211,22 +232,22 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
   // --- GESTION MULTI-PROJETS ---
   const createProject = useCallback((name?: string) => {
     const id = `project_${Date.now()}`;
-    let projectName = name?.trim() || '';
-    if (!projectName) {
-      // Calcule un nom unique
-      setProjects(prev => {
+    const trimmed = name?.trim() ?? '';
+    setProjects(prev => {
+      const existingNames = new Set(prev.map(p => p.name));
+      let projectName = trimmed;
+      if (!projectName) {
         const baseName = 'Nouveau Projet';
         let n = prev.length + 1;
         let candidate = `${baseName} ${n}`;
-        while (prev.some(p => p.name === candidate)) {
+        while (existingNames.has(candidate)) {
           n += 1;
           candidate = `${baseName} ${n}`;
         }
-        return [...prev, { ...buildEmptyProject(id, candidate) }];
-      });
-    } else {
-      setProjects(prev => [...prev, { ...buildEmptyProject(id, projectName) }]);
-    }
+        projectName = candidate;
+      }
+      return [...prev, buildEmptyProject(id, projectName)];
+    });
     setCurrentProjectId(id);
     setSelectedClipId(null);
     setCurrentTime(0);
@@ -246,6 +267,146 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     if (!trimmed) return;
     setProjects(prev => prev.map(p => p.id === id ? { ...p, name: trimmed } : p));
   }, []);
+
+  const deleteProject = useCallback((id: string) => {
+    setProjects(prev => {
+      const remaining = prev.filter(p => p.id !== id);
+      if (remaining.length === 0) {
+        // Toujours garder au moins un projet
+        return [buildInitialDefaultProject()];
+      }
+      return remaining;
+    });
+    setCurrentProjectId(prev => {
+      if (prev !== id) return prev;
+      const remaining = projectsRef.current.filter(p => p.id !== id);
+      return remaining[0]?.id ?? 'project_default';
+    });
+  }, []);
+
+  // --- HYDRATATION INITIALE (Supabase ou localStorage) ---
+  useEffect(() => {
+    let cancelled = false;
+    const supabase = getSupabase();
+    supabaseRef.current = supabase;
+
+    (async () => {
+      // Tentative Supabase
+      if (supabase) {
+        try {
+          const userId = await ensureSignedIn(supabase);
+          if (cancelled) return;
+          if (userId) {
+            userIdRef.current = userId;
+            const fetched = await fetchAllProjects(supabase, userId);
+            if (cancelled) return;
+            if (fetched.length > 0) {
+              setProjects(fetched);
+              setCurrentProjectId(fetched[0].id);
+              knownProjectIdsRef.current = new Set(fetched.map(p => p.id));
+            } else {
+              // Première utilisation : on pousse le projet par défaut en DB
+              for (const p of projectsRef.current) {
+                await upsertProject(supabase, userId, p);
+              }
+              knownProjectIdsRef.current = new Set(projectsRef.current.map(p => p.id));
+            }
+            setIsPersistenceCloud(true);
+            setIsHydrated(true);
+            return;
+          }
+        } catch (e) {
+          console.warn('[fullcrea] Hydratation Supabase échouée, fallback localStorage', e);
+        }
+      }
+
+      // Fallback localStorage
+      try {
+        const raw = localStorage.getItem(LOCAL_STORAGE_KEY);
+        if (raw) {
+          const parsed = JSON.parse(raw) as { projects?: Project[]; currentProjectId?: string };
+          if (parsed.projects && Array.isArray(parsed.projects) && parsed.projects.length > 0) {
+            if (!cancelled) {
+              setProjects(parsed.projects);
+              setCurrentProjectId(parsed.currentProjectId ?? parsed.projects[0].id);
+              knownProjectIdsRef.current = new Set(parsed.projects.map(p => p.id));
+            }
+          }
+        }
+      } catch (e) {
+        console.warn('[fullcrea] Lecture localStorage échouée', e);
+      }
+      if (!cancelled) setIsHydrated(true);
+    })();
+
+    return () => { cancelled = true; };
+  }, []);
+
+  // --- SAUVEGARDE DEBOUNCED ---
+  useEffect(() => {
+    if (!isHydrated) return;
+    const handle = setTimeout(async () => {
+      const supabase = supabaseRef.current;
+      const userId = userIdRef.current;
+
+      if (supabase && userId) {
+        try {
+          for (const p of projects) {
+            await upsertProject(supabase, userId, p);
+          }
+          const currentIds = new Set(projects.map(p => p.id));
+          const orphans = [...knownProjectIdsRef.current].filter(id => !currentIds.has(id));
+          for (const id of orphans) {
+            await deleteProjectRow(supabase, id);
+          }
+          knownProjectIdsRef.current = currentIds;
+        } catch (e) {
+          console.warn('[fullcrea] Sauvegarde Supabase échouée', e);
+        }
+      } else {
+        try {
+          // Filtre les blob: URLs (URL.createObjectURL) qui ne survivent pas à un reload
+          const sanitized = projects.map(p => ({
+            ...p,
+            assets: p.assets.filter(a => !a.src.startsWith('blob:')),
+            clips: p.clips.map(c => c.src.startsWith('blob:') ? { ...c, src: '' } : c),
+          }));
+          localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify({
+            projects: sanitized,
+            currentProjectId,
+          }));
+        } catch (e) {
+          console.warn('[fullcrea] Écriture localStorage échouée', e);
+        }
+      }
+    }, SAVE_DEBOUNCE_MS);
+    return () => clearTimeout(handle);
+  }, [projects, currentProjectId, isHydrated]);
+
+  // --- UPLOAD D'UN FICHIER (Supabase Storage si configuré) ---
+  const uploadAssetFile = useCallback(async (file: File): Promise<Asset> => {
+    let type: 'video' | 'audio' | 'image' = 'image';
+    if (file.type.startsWith('video')) type = 'video';
+    else if (file.type.startsWith('audio')) type = 'audio';
+
+    const supabase = supabaseRef.current;
+    const userId = userIdRef.current;
+    let src: string;
+
+    if (supabase && userId && currentProjectId) {
+      const result = await uploadAsset(supabase, userId, currentProjectId, file);
+      src = result?.src ?? URL.createObjectURL(file);
+    } else {
+      src = URL.createObjectURL(file);
+    }
+
+    return {
+      id: `imported_${Date.now()}`,
+      name: file.name,
+      type,
+      src,
+    };
+  }, [currentProjectId]);
 
   // --- MOTEUR DE LECTURE HAUTE PRÉCISION ---
   const requestRef = useRef<number | null>(null);
@@ -313,7 +474,8 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
   return (
     <ProjectContext.Provider value={{
       projects, currentProjectId, currentProject,
-      createProject, selectProject, renameProject,
+      createProject, selectProject, renameProject, deleteProject,
+      isHydrated, isPersistenceCloud, uploadAssetFile,
       isPlaying, togglePlay, currentTime, setCurrentTime,
       currentTimeRef, subscribeToTime,
       clips: currentProject.clips, setClips,
