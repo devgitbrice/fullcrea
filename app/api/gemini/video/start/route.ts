@@ -38,7 +38,15 @@ export async function POST(req: NextRequest) {
       params.image = { imageBytes: imageBase64, mimeType: imageMime };
     }
     const operation = await ai.models.generateVideos(params as never);
-    return Response.json({ operation });
+    // On extrait juste le `name` (ex: "models/veo-3.1.../operations/abc").
+    // Passer l'objet complet entre client et serveur casse l'instance de classe
+    // côté SDK (t._fromAPIResponse is not a function). Le polling se fera via REST.
+    const opName = (operation as unknown as { name?: string }).name
+      ?? (operation as unknown as { operation?: { name?: string } }).operation?.name;
+    if (!opName) {
+      return Response.json({ error: 'Réponse Veo sans nom d\'opération' }, { status: 502 });
+    }
+    return Response.json({ operationName: opName });
   } catch (e) {
     const msg = e instanceof Error ? e.message : 'Erreur Gemini';
     return Response.json({ error: msg }, { status: 502 });

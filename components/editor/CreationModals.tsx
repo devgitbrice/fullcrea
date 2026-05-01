@@ -164,27 +164,28 @@ export function VideoGenerationModal({ onClose }: { onClose: () => void }) {
         body: JSON.stringify({ prompt, imageBase64, imageMime }),
       });
       if (!startRes.ok) throw new Error(await readJsonError(startRes));
-      let { operation } = await startRes.json();
+      const { operationName } = await startRes.json();
+      if (!operationName) throw new Error('Pas d\'identifiant d\'opération renvoyé');
 
       // Polling toutes les 5s
       let elapsed = 0;
-      while (!operation?.done) {
+      let done = false;
+      let videoUri: string | null = null;
+      while (!done) {
         await new Promise((r) => setTimeout(r, 5000));
         elapsed += 5;
         setStatus(`Génération en cours… (${elapsed}s)`);
         const pollRes = await fetch('/api/gemini/video/poll', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ operation }),
+          body: JSON.stringify({ operationName }),
         });
         if (!pollRes.ok) throw new Error(await readJsonError(pollRes));
         const data = await pollRes.json();
-        operation = data.operation;
+        done = !!data.done;
+        videoUri = data.videoUri ?? null;
       }
 
-      const videoUri =
-        operation?.response?.generatedVideos?.[0]?.video?.uri ??
-        operation?.response?.generated_videos?.[0]?.video?.uri;
       if (!videoUri) throw new Error('Aucune vidéo dans la réponse Veo');
 
       setStatus('Téléchargement…');
