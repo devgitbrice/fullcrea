@@ -25,19 +25,12 @@ export function getSupabase(): SupabaseClient | null {
 }
 
 /**
- * Garantit qu'un user est connecté (anonyme par défaut).
- * Renvoie l'user.id ou null si la connexion a échoué.
+ * Renvoie l'user.id si une session existe, sinon null.
+ * L'AuthGate est responsable d'amener l'utilisateur à se connecter.
  */
 export async function ensureSignedIn(supabase: SupabaseClient): Promise<string | null> {
   const { data: { user } } = await supabase.auth.getUser();
-  if (user) return user.id;
-
-  const { data, error } = await supabase.auth.signInAnonymously();
-  if (error || !data.user) {
-    console.warn('[fullcrea] Auth anonyme indisponible', error?.message);
-    return null;
-  }
-  return data.user.id;
+  return user?.id ?? null;
 }
 
 export const STORAGE_BUCKET = 'fullcrea-assets';

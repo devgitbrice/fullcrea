@@ -1,10 +1,11 @@
 "use client";
 
 import { useRef, ChangeEvent, useState } from 'react';
-import { Upload, Piano, Wand2, FolderOpen, AlertTriangle, Cloud, CloudOff, HardDrive, X } from 'lucide-react';
+import { Upload, Piano, Wand2, FolderOpen, AlertTriangle, Cloud, CloudOff, HardDrive, X, LogOut } from 'lucide-react';
 import DraggableAsset from './DraggableAsset';
 import ProjectSelector from './ProjectSelector';
 import { useProject } from '@/components/ProjectContext';
+import { getSupabase } from '@/lib/supabase/client';
 
 export default function Sidebar() {
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -183,6 +184,21 @@ export default function Sidebar() {
         )}
 
       </div>
+
+      {/* --- FOOTER : déconnexion --- */}
+      {persistenceMode === 'cloud' && (
+        <div className="border-t border-gray-800 p-2">
+          <button
+            onClick={async () => {
+              const client = getSupabase();
+              if (client) await client.auth.signOut();
+            }}
+            className="w-full flex items-center justify-center gap-2 text-xs text-gray-400 hover:text-white hover:bg-gray-900 py-2 rounded transition"
+          >
+            <LogOut size={12} /> Se déconnecter
+          </button>
+        </div>
+      )}
     </div>
   );
 }

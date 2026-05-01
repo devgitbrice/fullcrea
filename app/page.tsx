@@ -10,6 +10,7 @@ import ViewSelector from '@/components/editor/ViewSelector';
 import ImagePropertyPanel from '@/components/editor/ImagePropertyPanel';
 import TextPropertyPanel from '@/components/editor/TextPropertyPanel';
 import { ProjectProvider, useProject } from '@/components/ProjectContext';
+import AuthGate from '@/components/AuthGate';
 
 function EditorLayout() {
   const { currentView } = useProject();
@@ -69,8 +70,10 @@ function EditorLayout() {
 
 export default function EditorPage() {
   return (
-    <ProjectProvider>
-       <EditorLayout />
-    </ProjectProvider>
+    <AuthGate>
+      <ProjectProvider>
+         <EditorLayout />
+      </ProjectProvider>
+    </AuthGate>
   );
 }
