@@ -3,6 +3,8 @@
 import { useRef, ChangeEvent, useState } from 'react';
 import {
   Upload,
+  Video,
+  Monitor,
   Piano,
   Wand2,
   FolderOpen,
@@ -17,6 +19,7 @@ import {
 import DraggableAsset from './DraggableAsset';
 import ProjectSelector from './ProjectSelector';
 import { CreationSection } from './CreationModals';
+import RecorderModal, { RecorderMode } from './RecorderModal';
 import { useProject } from '@/components/ProjectContext';
 import { useToast } from '@/components/Toast';
 
@@ -42,6 +45,7 @@ export default function Sidebar() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [isUploading, setIsUploading] = useState(false);
   const [collapsed, setCollapsed] = useState(readCollapsed);
+  const [recorderMode, setRecorderMode] = useState<RecorderMode | null>(null);
   const { toast } = useToast();
 
   const {
@@ -126,6 +130,22 @@ export default function Sidebar() {
           >
             {isUploading ? <Loader2 size={16} className="animate-spin" /> : <Upload size={16} />}
           </button>
+          <button
+            onClick={() => setRecorderMode('camera')}
+            title="Enregistrer une vidéo (webcam ou iPhone)"
+            aria-label="Enregistrer une vidéo"
+            className="p-2 rounded bg-gray-800 hover:bg-gray-700 text-gray-200 transition"
+          >
+            <Video size={16} />
+          </button>
+          <button
+            onClick={() => setRecorderMode('screen')}
+            title="Enregistrer l'écran"
+            aria-label="Enregistrer l'écran"
+            className="p-2 rounded bg-gray-800 hover:bg-gray-700 text-gray-200 transition"
+          >
+            <Monitor size={16} />
+          </button>
         </div>
       ) : (
         /* Largeur fixe pour éviter le reflow du contenu pendant la transition */
@@ -160,6 +180,24 @@ export default function Sidebar() {
                 <Upload size={16} />
                 {isUploading ? 'Import en cours…' : 'Importer Média'}
               </button>
+              <div className="grid grid-cols-2 gap-1">
+                <button
+                  onClick={() => setRecorderMode('camera')}
+                  title="Webcam ou iPhone connecté"
+                  className="flex items-center justify-center gap-1.5 bg-gray-800 hover:bg-gray-700 text-gray-200 py-2 rounded text-xs font-medium transition"
+                >
+                  <Video size={14} />
+                  Vidéo
+                </button>
+                <button
+                  onClick={() => setRecorderMode('screen')}
+                  title="Enregistrer ce qui s'affiche à l'écran"
+                  className="flex items-center justify-center gap-1.5 bg-gray-800 hover:bg-gray-700 text-gray-200 py-2 rounded text-xs font-medium transition"
+                >
+                  <Monitor size={14} />
+                  Écran
+                </button>
+              </div>
               <div className="text-[10px] text-gray-600 text-center">
                 Glissez ensuite un média sur la timeline
               </div>
@@ -261,6 +299,10 @@ export default function Sidebar() {
 
           </div>
         </div>
+      )}
+
+      {recorderMode && (
+        <RecorderModal mode={recorderMode} onClose={() => setRecorderMode(null)} />
       )}
     </div>
   );
