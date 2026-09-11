@@ -60,7 +60,7 @@ export default function LastUpdateBadge() {
   return (
     <div
       title="Date de la dernière mise à jour de l'application"
-      className="fixed right-4 top-4 z-50 rounded-md border border-gray-800 bg-gray-950/90 px-3 py-1.5 text-xs text-gray-400 shadow-lg backdrop-blur-sm"
+      className="rounded-md border border-gray-800 bg-gray-950/90 px-3 py-1.5 text-xs text-gray-400 shadow-lg backdrop-blur-sm"
     >
       <div>Dernière mise à jour : {formattedDate}</div>
       <div className="text-gray-500">{formatRelativeTime(buildTime, now)}</div>

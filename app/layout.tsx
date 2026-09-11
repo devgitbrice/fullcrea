@@ -3,6 +3,7 @@ import { Inter } from "next/font/google";
 import "./globals.css";
 import UpdateNotifier from "@/components/UpdateNotifier";
 import LastUpdateBadge from "@/components/LastUpdateBadge";
+import AudioLinkButton from "@/components/AudioLinkButton";
 
 const inter = Inter({ subsets: ["latin"] });
 
@@ -34,7 +35,10 @@ export default function RootLayout({
         }}
       >
         {children}
-        <LastUpdateBadge />
+        <div className="fixed right-4 top-4 z-50 flex items-center gap-2">
+          <AudioLinkButton />
+          <LastUpdateBadge />
+        </div>
         <UpdateNotifier />
       </body>
     </html>
