@@ -11,6 +11,7 @@ import ImagePropertyPanel from '@/components/editor/ImagePropertyPanel';
 import TextPropertyPanel from '@/components/editor/TextPropertyPanel';
 import { ProjectProvider, useProject } from '@/components/ProjectContext';
 import AuthGate from '@/components/AuthGate';
+import QuickLinks from '@/components/QuickLinks';
 
 function EditorLayout() {
   const { currentView } = useProject();
@@ -64,6 +65,7 @@ function EditorLayout() {
             </div>
         </div>
         <PreviewModal />
+        <QuickLinks />
     </div>
   );
 }
