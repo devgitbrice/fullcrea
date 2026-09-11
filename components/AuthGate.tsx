@@ -161,7 +161,7 @@ function AuthForm({ supabase }: { supabase: SupabaseClient }) {
   return (
     <div className="h-screen w-screen flex items-center justify-center bg-black text-white p-6">
       <div className="w-full max-w-sm bg-gray-950 border border-gray-800 rounded-lg p-6 shadow-2xl">
-        <h1 className="text-xl font-bold tracking-tight mb-1">Studio Next</h1>
+        <h1 className="text-xl font-bold tracking-tight mb-1">Gennn Cut</h1>
         <p className="text-sm text-gray-500 mb-5">{SUBTITLES[mode]}</p>
 
         {mode !== 'reset' && (

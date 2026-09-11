@@ -9,7 +9,7 @@ import { Music, Scissors } from "lucide-react";
 const inter = Inter({ subsets: ["latin"] });
 
 export const metadata: Metadata = {
-  title: "Studio Next",
+  title: "Gennn Cut",
   description: "Éditeur vidéo web basé sur Next.js",
 };
 
