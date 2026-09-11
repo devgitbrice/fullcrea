@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Inter } from "next/font/google";
 import "./globals.css";
 import UpdateNotifier from "@/components/UpdateNotifier";
+import LastUpdateBadge from "@/components/LastUpdateBadge";
 
 const inter = Inter({ subsets: ["latin"] });
 
@@ -33,6 +34,7 @@ export default function RootLayout({
         }}
       >
         {children}
+        <LastUpdateBadge />
         <UpdateNotifier />
       </body>
     </html>

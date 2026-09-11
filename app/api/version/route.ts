@@ -7,9 +7,11 @@ const BUILD_ID =
   process.env.VERCEL_DEPLOYMENT_ID ||
   String(Date.now());
 
+const BUILD_TIME = process.env.NEXT_PUBLIC_BUILD_TIME || new Date().toISOString();
+
 export async function GET() {
   return NextResponse.json(
-    { version: BUILD_ID },
+    { version: BUILD_ID, buildTime: BUILD_TIME },
     { headers: { "Cache-Control": "no-store" } }
   );
 }
