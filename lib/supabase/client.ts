@@ -18,18 +18,34 @@ export function getSupabase(): SupabaseClient | null {
     auth: {
       persistSession: true,
       autoRefreshToken: true,
-      detectSessionInUrl: false,
+      // Nécessaire pour que le lien de réinitialisation de mot de passe (hash
+      // #access_token=…&type=recovery) ouvre une session PASSWORD_RECOVERY.
+      detectSessionInUrl: true,
     },
   });
   return cached;
 }
 
+export interface CurrentUser {
+  id: string;
+  email: string | null;
+}
+
 /**
- * Renvoie l'user.id si une session existe, sinon null.
+ * Renvoie l'utilisateur courant (id + email) si une session existe, sinon null.
  * L'AuthGate est responsable d'amener l'utilisateur à se connecter.
  */
-export async function ensureSignedIn(supabase: SupabaseClient): Promise<string | null> {
+export async function getCurrentUser(supabase: SupabaseClient): Promise<CurrentUser | null> {
   const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return null;
+  return { id: user.id, email: user.email ?? null };
+}
+
+/**
+ * Renvoie l'user.id si une session existe, sinon null.
+ */
+export async function ensureSignedIn(supabase: SupabaseClient): Promise<string | null> {
+  const user = await getCurrentUser(supabase);
   return user?.id ?? null;
 }
 

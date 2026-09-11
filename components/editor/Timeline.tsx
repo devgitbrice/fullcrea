@@ -1,12 +1,38 @@
 "use client";
 
-import { useRef, DragEvent, useState, useEffect, PointerEvent as ReactPointerEvent, MouseEvent as ReactMouseEvent, useCallback, useMemo } from 'react';
-import { Music, Plus, Video, AudioLines, Type, X } from 'lucide-react';
+import { shouldIgnoreShortcut } from '@/lib/keyboard';
+import { useRef, DragEvent, useState, useEffect, PointerEvent as ReactPointerEvent, MouseEvent as ReactMouseEvent, useCallback, useMemo, type ReactNode } from 'react';
+import { Music, Plus, Video, AudioLines, Type, X, MousePointerClick } from 'lucide-react';
 import { useProject, Clip } from '@/components/ProjectContext';
+import { useToast } from '@/components/Toast';
 import TimelineToolbar from './TimelineToolbar';
 import AudioWaveform from './AudioWaveform';
 
 const PX_PER_SEC_BASE = 30;
+const SNAP_THRESHOLD_PX = 10;
+const SNAP_THRESHOLD_TOUCH_PX = 14;
+const RULER_MAJOR_INTERVALS_SEC = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600];
+const RULER_MAJOR_MIN_GAP_PX = 90;
+const RULER_MINOR_MIN_GAP_PX = 12;
+const CONTENT_MIN_MARGIN_PX = 400;
+const CONTENT_END_MARGIN_PX = 600;
+
+function formatSeconds(seconds: number): string {
+  const total = Math.max(0, Math.round(seconds));
+  const m = Math.floor(total / 60);
+  const s = total % 60;
+  return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+}
+
+function formatPx(px: number): string {
+  return formatSeconds(px / PX_PER_SEC_BASE);
+}
+
+function pickMajorIntervalSec(zoomLevel: number): number {
+  const pxPerSec = PX_PER_SEC_BASE * zoomLevel;
+  return RULER_MAJOR_INTERVALS_SEC.find(sec => sec * pxPerSec >= RULER_MAJOR_MIN_GAP_PX)
+    ?? RULER_MAJOR_INTERVALS_SEC[RULER_MAJOR_INTERVALS_SEC.length - 1];
+}
 
 // --- Probe asynchrone de la durée d'un média ---
 function probeMediaDuration(src: string, kind: 'video' | 'audio'): Promise<number | null> {
@@ -36,10 +62,17 @@ function probeMediaDuration(src: string, kind: 'video' | 'audio'): Promise<numbe
 export default function Timeline() {
   const timelineRef = useRef<HTMLDivElement>(null);
   const playheadRef = useRef<HTMLDivElement>(null);
+  const clipboardRef = useRef<Clip | null>(null);
 
   const {
     clips,
     setClips,
+    deleteClip,
+    duplicateClip,
+    beginHistoryGesture,
+    endHistoryGesture,
+    projectDurationPx,
+    currentProjectId,
     currentTime,
     setCurrentTime,
     currentView,
@@ -56,9 +89,22 @@ export default function Timeline() {
     addTrack,
     textTrackId,
   } = useProject();
+  const { toast } = useToast();
+
+  const clipsRef = useRef(clips);
+  const currentProjectIdRef = useRef(currentProjectId);
 
   const [isScrubbing, setIsScrubbing] = useState(false);
   const [draggingClipId, setDraggingClipId] = useState<string | null>(null);
+  const [viewportWidth, setViewportWidth] = useState(0);
+  const [snapGuideX, setSnapGuideX] = useState<number | null>(null);
+  const [cutHover, setCutHover] = useState<{ clipId: string; x: number } | null>(null);
+
+  const contentWidth = Math.max(
+    viewportWidth + CONTENT_MIN_MARGIN_PX,
+    projectDurationPx * zoomLevel + CONTENT_END_MARGIN_PX
+  );
+  const projectEndX = projectDurationPx * zoomLevel;
 
   useEffect(() => {
     const unsubscribe = subscribeToTime((time) => {
@@ -69,11 +115,37 @@ export default function Timeline() {
     return unsubscribe;
   }, [subscribeToTime, zoomLevel]);
 
+  // --- MESURE DU VIEWPORT (largeur du contenu adaptative) ---
+  useEffect(() => {
+    const el = timelineRef.current;
+    if (!el) return;
+    const measure = () => setViewportWidth(el.clientWidth);
+    measure();
+    if (typeof ResizeObserver === 'undefined') {
+      window.addEventListener('resize', measure);
+      return () => window.removeEventListener('resize', measure);
+    }
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
+    if (activeTool !== 'cut') setCutHover(null);
+  }, [activeTool]);
+
+  useEffect(() => {
+    clipsRef.current = clips;
+  }, [clips]);
+
+  useEffect(() => {
+    currentProjectIdRef.current = currentProjectId;
+  }, [currentProjectId]);
+
   // --- SNAPPING ---
-  const SNAP_THRESHOLD = 10 / zoomLevel;
-  const getSnappedPosition = useCallback((pos: number, excludeId?: string) => {
+  const getSnappedPosition = useCallback((pos: number, excludeId?: string, thresholdScreenPx = SNAP_THRESHOLD_PX) => {
     let bestPos = pos;
-    let minDiff = SNAP_THRESHOLD;
+    let minDiff = thresholdScreenPx / zoomLevel;
     const snapPoints = [currentTimeRef.current];
     clips.forEach(c => {
       if (c.id !== excludeId) {
@@ -89,14 +161,71 @@ export default function Timeline() {
       }
     });
     return bestPos;
-  }, [clips, currentTimeRef, SNAP_THRESHOLD]);
+  }, [clips, currentTimeRef, zoomLevel]);
 
-  // --- CLAVIER : Suppression + Play/Pause ---
+  // --- SUPPRESSION (clavier + bouton X) ---
+  // « Annuler » restaure le clip capturé plutôt que d'appeler undo(), qui
+  // annulerait la dernière action quelle qu'elle soit (drag, trim, collage…).
+  // Le clic est ignoré si le projet a changé entre-temps ou si le clip est déjà
+  // revenu (Ctrl+Z) : un setClips redondant polluerait l'historique et viderait le redo.
+  const removeClip = useCallback((id: string) => {
+    const clip = clipsRef.current.find(c => c.id === id);
+    if (!clip) return;
+    const projectId = currentProjectId;
+    deleteClip(id);
+    toast({
+      message: 'Clip supprimé',
+      type: 'info',
+      action: {
+        label: 'Annuler',
+        onClick: () => {
+          if (currentProjectIdRef.current !== projectId) return;
+          if (clipsRef.current.some(c => c.id === clip.id)) return;
+          setClips(prev => prev.some(c => c.id === clip.id) ? prev : [...prev, clip]);
+          setSelectedClipId(clip.id);
+        },
+      },
+    });
+  }, [currentProjectId, deleteClip, setClips, setSelectedClipId, toast]);
+
+  // --- CLAVIER : Suppression, Play/Pause, Dupliquer, Copier/Coller ---
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      const target = e.target as HTMLElement | null;
-      if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) return;
-      if (target?.isContentEditable) return;
+      if (shouldIgnoreShortcut(e)) return;
+
+      const mod = e.ctrlKey || e.metaKey;
+      if (mod && !e.altKey) {
+        const key = e.key.toLowerCase();
+        if (key === 'd') {
+          e.preventDefault();
+          if (selectedClipId) duplicateClip(selectedClipId);
+          return;
+        }
+        if (key === 'c') {
+          const clip = selectedClipId ? clips.find(c => c.id === selectedClipId) : undefined;
+          if (clip) clipboardRef.current = { ...clip };
+          return;
+        }
+        if (key === 'v') {
+          const copied = clipboardRef.current;
+          if (!copied) return;
+          e.preventDefault();
+          const pasted: Clip = {
+            ...copied,
+            id: `${copied.id}_paste_${Date.now()}`,
+            start: Math.max(0, currentTimeRef.current),
+          };
+          if (copied.transform) pasted.transform = { ...copied.transform };
+          setClips(prev => [...prev, pasted]);
+          setSelectedClipId(pasted.id);
+          return;
+        }
+        if (key === 'a') {
+          e.preventDefault();
+          return;
+        }
+        return;
+      }
 
       if (e.code === 'Space' || e.key === ' ') {
         e.preventDefault();
@@ -104,13 +233,13 @@ export default function Timeline() {
         return;
       }
       if ((e.key === 'Delete' || e.key === 'Backspace') && selectedClipId) {
-        setClips(prev => prev.filter(c => c.id !== selectedClipId));
-        setSelectedClipId(null);
+        e.preventDefault();
+        removeClip(selectedClipId);
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [selectedClipId, setClips, setSelectedClipId, togglePlay]);
+  }, [selectedClipId, clips, setClips, setSelectedClipId, togglePlay, duplicateClip, removeClip, currentTimeRef]);
 
   // --- BLOCAGE ZOOM CHROME ---
   useEffect(() => {
@@ -138,6 +267,14 @@ export default function Timeline() {
     const clipB: Clip = { ...clip, id: `${clip.id}_p2_${Date.now()}`, start: clip.start + cutPointX, width: clip.width - cutPointX };
     setClips(prev => [...prev.filter(c => c.id !== clip.id), clipA, clipB]);
     setSelectedClipId(null);
+    setCutHover(null);
+  };
+
+  // --- APERÇU DE COUPE (ligne rouge sous le pointeur) ---
+  const handleClipPointerMove = (e: ReactPointerEvent<HTMLDivElement>, clip: Clip) => {
+    if (activeTool !== 'cut') return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    setCutHover({ clipId: clip.id, x: e.clientX - rect.left });
   };
 
   // --- TRIM (Pointer Events : marche souris + touch + Apple Pencil) ---
@@ -148,25 +285,34 @@ export default function Timeline() {
     e.preventDefault();
     const target = e.currentTarget;
     target.setPointerCapture(e.pointerId);
+    beginHistoryGesture();
     const startX = e.clientX;
     const initialWidth = clip.width;
     const initialStart = clip.start;
+    const snapPx = e.pointerType === 'touch' ? SNAP_THRESHOLD_TOUCH_PX : SNAP_THRESHOLD_PX;
 
     const onMove = (moveEvent: PointerEvent) => {
       const deltaX = (moveEvent.clientX - startX) / zoomLevel;
-      setClips(prev => prev.map(c => {
-        if (c.id !== clip.id) return c;
-        if (edge === 'end') {
-          const newEnd = getSnappedPosition(initialStart + initialWidth + deltaX, clip.id);
-          return { ...c, width: Math.max(5, newEnd - initialStart) };
-        } else {
-          const newStart = getSnappedPosition(initialStart + deltaX, clip.id);
-          const newWidth = initialStart + initialWidth - newStart;
-          return newWidth > 5 ? { ...c, start: newStart, width: newWidth } : c;
-        }
-      }));
+      if (edge === 'end') {
+        const rawEnd = initialStart + initialWidth + deltaX;
+        const newEnd = getSnappedPosition(rawEnd, clip.id, snapPx);
+        setSnapGuideX(newEnd !== rawEnd ? newEnd * zoomLevel : null);
+        setClips(prev => prev.map(c =>
+          c.id === clip.id ? { ...c, width: Math.max(5, newEnd - initialStart) } : c
+        ));
+      } else {
+        const rawStart = initialStart + deltaX;
+        const newStart = getSnappedPosition(rawStart, clip.id, snapPx);
+        const newWidth = initialStart + initialWidth - newStart;
+        setSnapGuideX(newStart !== rawStart && newWidth > 5 ? newStart * zoomLevel : null);
+        setClips(prev => prev.map(c =>
+          c.id === clip.id && newWidth > 5 ? { ...c, start: newStart, width: newWidth } : c
+        ));
+      }
     };
     const onUp = () => {
+      endHistoryGesture();
+      setSnapGuideX(null);
       try { target.releasePointerCapture(e.pointerId); } catch {}
       target.removeEventListener('pointermove', onMove);
       target.removeEventListener('pointerup', onUp);
@@ -186,6 +332,7 @@ export default function Timeline() {
 
     const target = e.currentTarget;
     target.setPointerCapture(e.pointerId);
+    beginHistoryGesture();
 
     const rect = target.getBoundingClientRect();
     const offsetX = e.clientX - rect.left;
@@ -195,6 +342,7 @@ export default function Timeline() {
     let moved = false;
     const startX = e.clientX;
     const startY = e.clientY;
+    const snapPx = e.pointerType === 'touch' ? SNAP_THRESHOLD_TOUCH_PX : SNAP_THRESHOLD_PX;
 
     const onMove = (moveEvent: PointerEvent) => {
       if (!timelineRef.current) return;
@@ -206,13 +354,32 @@ export default function Timeline() {
       }
       const timelineRect = timelineRef.current.getBoundingClientRect();
       const x = ((moveEvent.clientX - timelineRect.left) + timelineRef.current.scrollLeft - offsetX) / zoomLevel;
-      const newStart = Math.max(0, x);
+      const rawStart = Math.max(0, x);
+      const rawEnd = rawStart + clip.width;
+
+      // Aimante le bord le plus proche d'un point de snap (début ou fin du clip)
+      const snappedStart = getSnappedPosition(rawStart, clip.id, snapPx);
+      const snappedEnd = getSnappedPosition(rawEnd, clip.id, snapPx);
+      const startDiff = Math.abs(snappedStart - rawStart);
+      const endDiff = Math.abs(snappedEnd - rawEnd);
+      let newStart = rawStart;
+      let guide: number | null = null;
+      if (snappedStart !== rawStart && (snappedEnd === rawEnd || startDiff <= endDiff)) {
+        newStart = snappedStart;
+        guide = snappedStart;
+      } else if (snappedEnd !== rawEnd && snappedEnd - clip.width >= 0) {
+        newStart = snappedEnd - clip.width;
+        guide = snappedEnd;
+      }
+      setSnapGuideX(guide !== null ? guide * zoomLevel : null);
       setClips(prev => prev.map(c =>
         c.id === clip.id ? { ...c, start: newStart } : c
       ));
     };
     const onUp = () => {
+      endHistoryGesture();
       setDraggingClipId(null);
+      setSnapGuideX(null);
       try { target.releasePointerCapture(e.pointerId); } catch {}
       target.removeEventListener('pointermove', onMove);
       target.removeEventListener('pointerup', onUp);
@@ -392,6 +559,15 @@ export default function Timeline() {
     return "bg-blue-600/40 border-blue-500 text-blue-100";
   }, []);
 
+  const getClipLabel = (clip: Clip) => {
+    if (clip.type !== 'text') return clip.name;
+    const text = (clip.text ?? '').replace(/\s+/g, ' ').trim();
+    return text || clip.name;
+  };
+
+  const getClipTitle = (clip: Clip) =>
+    `${getClipLabel(clip)} — ${formatPx(clip.start)} → ${formatPx(clip.start + clip.width)} (${formatPx(clip.width)})`;
+
   // Pistes affichées : text + video + audio en mode 'video', uniquement audio sinon.
   // Toujours dans l'ordre : texte (haut), vidéo, audio (bas).
   const visibleTracks = useMemo(() => {
@@ -407,21 +583,46 @@ export default function Timeline() {
     return clips.filter(c => c.type !== 'text' && c.track === track.id);
   }, [clips]);
 
+  // --- RÈGLE ADAPTATIVE ---
   const rulerMarks = useMemo(() => {
-    return Array.from({ length: 200 }).map((_, i) => (
-      <div
-        key={i}
-        className="absolute border-l border-gray-700 h-2 pl-1 text-[10px] text-gray-500"
-        style={{ left: i * 100 * zoomLevel }}
-      >
-        {i * 10}s
-      </div>
-    ));
-  }, [zoomLevel]);
+    const pxPerSec = PX_PER_SEC_BASE * zoomLevel;
+    const majorSec = pickMajorIntervalSec(zoomLevel);
+    const majorPx = majorSec * pxPerSec;
+    const minorSec = majorSec / 5;
+    const minorPx = minorSec * pxPerSec;
+    const showMinor = minorPx >= RULER_MINOR_MIN_GAP_PX;
+    const majorCount = Math.ceil(contentWidth / majorPx) + 1;
+    const marks: ReactNode[] = [];
+
+    for (let i = 0; i < majorCount; i++) {
+      const left = i * majorPx;
+      marks.push(
+        <div
+          key={`M${i}`}
+          className="absolute bottom-0 border-l border-gray-700 h-2 pl-1 text-[10px] text-gray-500 whitespace-nowrap"
+          style={{ left }}
+        >
+          {formatSeconds(i * majorSec)}
+        </div>
+      );
+      if (showMinor) {
+        for (let j = 1; j < 5; j++) {
+          marks.push(
+            <div
+              key={`m${i}_${j}`}
+              className="absolute bottom-0 border-l border-gray-800 h-1"
+              style={{ left: left + j * minorPx }}
+            />
+          );
+        }
+      }
+    }
+    return marks;
+  }, [zoomLevel, contentWidth]);
 
   return (
     <div className="flex flex-col h-full bg-gray-900 text-gray-300 border-t border-gray-700 select-none">
-      <TimelineToolbar />
+      <TimelineToolbar onDeleteClip={removeClip} />
       <div
         ref={timelineRef}
         className={`timeline-container flex-1 overflow-x-auto overflow-y-hidden relative custom-scrollbar ${isScrubbing ? 'cursor-grabbing' : 'cursor-default'}`}
@@ -432,11 +633,19 @@ export default function Timeline() {
       >
         {/* RÈGLE — clic ici déplace la tête de lecture */}
         <div
-          className="h-6 bg-gray-950 sticky top-0 border-b border-gray-800 flex items-end z-30 min-w-[10000px] cursor-ew-resize"
-          style={{ touchAction: 'none' }}
+          className="h-6 bg-gray-950 sticky top-0 border-b border-gray-800 flex items-end z-30 cursor-ew-resize"
+          style={{ touchAction: 'none', minWidth: contentWidth }}
           onPointerDown={(e) => { e.stopPropagation(); handleScrubPointerDown(e); }}
         >
           {rulerMarks}
+          {projectDurationPx > 0 && (
+            <div
+              className="absolute top-0 bottom-0 border-l border-dashed border-gray-600 pl-1 pt-0.5 text-[10px] text-gray-500 pointer-events-none"
+              style={{ left: projectEndX }}
+            >
+              Fin
+            </div>
+          )}
         </div>
 
         {/* TÊTE DE LECTURE */}
@@ -453,118 +662,160 @@ export default function Timeline() {
            <div className="absolute top-0 w-3 h-3 bg-red-500 rotate-45 -mt-1.5 transform group-hover:scale-125 transition-transform"></div>
         </div>
 
-        {/* PISTES */}
-        {visibleTracks.map(track => {
-          const isText = track.type === 'text';
-          const trackHeight = isText ? 'h-12' : 'h-24';
-          const labelBg = isText
-            ? 'bg-yellow-900/30 text-yellow-400'
-            : track.type === 'video'
-              ? 'bg-blue-900/30 text-blue-400'
-              : 'bg-green-900/30 text-green-400';
-          return (
-            <div key={track.id} className={`${trackHeight} bg-gray-900/50 border-b border-gray-800 relative my-1 min-w-[10000px]`}>
-              <div className={`absolute top-0 bottom-0 left-0 w-20 border-r border-gray-700 z-40 sticky left-0 flex items-center justify-center text-[10px] font-bold uppercase tracking-tighter ${labelBg}`}>
-                {track.name}
-              </div>
-              {clipsForTrack(track).map(clip => (
-                <div
-                  key={clip.id}
-                  className={`absolute top-1 bottom-1 rounded border overflow-hidden flex items-center px-2 text-xs group transition-all duration-150
-                    ${getClipStyle(clip.type)}
-                    ${activeTool === 'cut' ? 'cursor-crosshair' : 'cursor-grab active:cursor-grabbing'}
-                    ${selectedClipId === clip.id ? 'ring-2 ring-white border-white z-20 shadow-[0_0_15px_rgba(255,255,255,0.3)]' : 'hover:shadow-lg hover:shadow-white/5'}
-                    ${draggingClipId === clip.id ? 'opacity-80 z-30' : ''}
-                  `}
-                  style={{
-                    left: `${clip.start * zoomLevel}px`,
-                    width: `${clip.width * zoomLevel}px`,
-                    touchAction: 'none', // permet au pointermove tactile sans interférence du scroll
-                  }}
-                  onPointerDown={(e) => {
-                    e.stopPropagation();
-                    if (activeTool === 'select') {
-                      handleClipPointerDown(e, clip);
-                    }
-                  }}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    if (activeTool === 'select') setSelectedClipId(clip.id);
-                    handleClipClick(e, clip);
-                  }}
-                >
-                  {activeTool === 'select' && (
-                    <>
-                      {/* Trim handles : zone tactile de 14px (≈ pouce iPad) */}
-                      <div
-                        className="absolute left-0 top-0 bottom-0 w-3.5 cursor-ew-resize hover:bg-white/30 z-10 touch-none"
-                        style={{ touchAction: 'none' }}
-                        onPointerDown={(e) => handleTrim(e, clip, 'start')}
-                      />
-                      <div
-                        className="absolute right-0 top-0 bottom-0 w-3.5 cursor-ew-resize hover:bg-white/30 z-10 touch-none"
-                        style={{ touchAction: 'none' }}
-                        onPointerDown={(e) => handleTrim(e, clip, 'end')}
-                      />
-                    </>
-                  )}
-                  {clip.type === 'audio' && clip.src && (
-                    <AudioWaveform
-                      src={clip.src}
-                      durationSeconds={clip.width / PX_PER_SEC_BASE}
-                    />
-                  )}
-                  <div className="relative z-[1] flex items-center min-w-0 w-full">
-                    {clip.type === 'audio' && <Music size={12} className="mr-2 shrink-0 opacity-70" />}
-                    {clip.type === 'text' && <Type size={12} className="mr-2 shrink-0 opacity-50" />}
-                    <span className="truncate drop-shadow-[0_1px_1px_rgba(0,0,0,0.6)]">{clip.name}</span>
-                  </div>
+        {/* ZONE DES PISTES */}
+        <div className="relative">
+          {/* Marqueur de fin de projet */}
+          {projectDurationPx > 0 && (
+            <div
+              className="absolute top-0 bottom-0 w-px border-l border-dashed border-gray-600/70 z-10 pointer-events-none"
+              style={{ left: projectEndX }}
+            />
+          )}
 
-                  {/* Bouton de suppression (X rouge en haut à droite) */}
-                  <button
-                    type="button"
-                    onPointerDown={(e) => e.stopPropagation()}
-                    onClick={(e) => {
+          {/* Guide d'aimantation */}
+          {snapGuideX !== null && (
+            <div
+              className="absolute top-0 bottom-0 w-px bg-cyan-400/80 z-40 pointer-events-none"
+              style={{ left: snapGuideX }}
+            />
+          )}
+
+          {/* État vide */}
+          {clips.length === 0 && (
+            <div className="absolute inset-0 z-30 pointer-events-none">
+              <div
+                className="sticky left-0 h-full pl-20 flex flex-col items-center justify-center gap-1 text-gray-600 text-xs text-center"
+                style={{ width: viewportWidth || '100%' }}
+              >
+                <MousePointerClick size={18} className="mb-1 opacity-70" />
+                <span>Glissez un média depuis la bibliothèque</span>
+                <span>ou appuyez sur T puis cliquez sur la timeline pour ajouter un texte</span>
+              </div>
+            </div>
+          )}
+
+          {/* PISTES */}
+          {visibleTracks.map(track => {
+            const isText = track.type === 'text';
+            const trackHeight = isText ? 'h-12' : 'h-24';
+            const labelBg = isText
+              ? 'bg-yellow-900/30 text-yellow-400'
+              : track.type === 'video'
+                ? 'bg-blue-900/30 text-blue-400'
+                : 'bg-green-900/30 text-green-400';
+            return (
+              <div
+                key={track.id}
+                className={`${trackHeight} bg-gray-900/50 border-b border-gray-800 relative my-1`}
+                style={{ minWidth: contentWidth }}
+              >
+                <div className={`absolute top-0 bottom-0 left-0 w-20 border-r border-gray-700 z-40 sticky left-0 flex items-center justify-center text-[10px] font-bold uppercase tracking-tighter ${labelBg}`}>
+                  {track.name}
+                </div>
+                {clipsForTrack(track).map(clip => (
+                  <div
+                    key={clip.id}
+                    title={getClipTitle(clip)}
+                    className={`absolute top-1 bottom-1 rounded border overflow-hidden flex items-center px-2 text-xs group transition-all duration-150
+                      ${getClipStyle(clip.type)}
+                      ${activeTool === 'cut' ? 'cursor-crosshair' : 'cursor-grab active:cursor-grabbing'}
+                      ${selectedClipId === clip.id ? 'ring-2 ring-white border-white z-20 shadow-[0_0_15px_rgba(255,255,255,0.3)]' : 'hover:shadow-lg hover:shadow-white/5'}
+                      ${draggingClipId === clip.id ? 'opacity-80 z-30' : ''}
+                    `}
+                    style={{
+                      left: `${clip.start * zoomLevel}px`,
+                      width: `${clip.width * zoomLevel}px`,
+                      touchAction: 'none', // permet au pointermove tactile sans interférence du scroll
+                    }}
+                    onPointerDown={(e) => {
                       e.stopPropagation();
-                      const label = clip.type === 'text' && clip.text ? `"${clip.text}"` : `"${clip.name}"`;
-                      if (window.confirm(`Êtes-vous sûr de vouloir supprimer ${label} ?`)) {
-                        setClips(prev => prev.filter(c => c.id !== clip.id));
-                        if (selectedClipId === clip.id) setSelectedClipId(null);
+                      if (activeTool === 'select') {
+                        handleClipPointerDown(e, clip);
                       }
                     }}
-                    className="absolute top-0.5 right-0.5 w-5 h-5 rounded-full bg-red-600/90 hover:bg-red-500 text-white flex items-center justify-center z-30 shadow-md transition-transform active:scale-90 focus:outline-none focus:ring-2 focus:ring-red-400"
-                    style={{ touchAction: 'manipulation' }}
-                    title="Supprimer ce média"
-                    aria-label="Supprimer ce média"
+                    onPointerMove={(e) => handleClipPointerMove(e, clip)}
+                    onPointerLeave={() => { if (activeTool === 'cut') setCutHover(null); }}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (activeTool === 'select') setSelectedClipId(clip.id);
+                      handleClipClick(e, clip);
+                    }}
                   >
-                    <X size={11} strokeWidth={3} />
-                  </button>
-                </div>
-              ))}
-            </div>
-          );
-        })}
+                    {activeTool === 'select' && (
+                      <>
+                        {/* Trim handles : zone tactile de 14px (≈ pouce iPad) */}
+                        <div
+                          className="absolute left-0 top-0 bottom-0 w-3.5 cursor-ew-resize hover:bg-white/30 z-10 touch-none"
+                          style={{ touchAction: 'none' }}
+                          onPointerDown={(e) => handleTrim(e, clip, 'start')}
+                        />
+                        <div
+                          className="absolute right-0 top-0 bottom-0 w-3.5 cursor-ew-resize hover:bg-white/30 z-10 touch-none"
+                          style={{ touchAction: 'none' }}
+                          onPointerDown={(e) => handleTrim(e, clip, 'end')}
+                        />
+                      </>
+                    )}
+                    {activeTool === 'cut' && cutHover?.clipId === clip.id && (
+                      <div
+                        className="absolute top-0 bottom-0 w-px bg-red-500 z-20 pointer-events-none"
+                        style={{ left: cutHover.x }}
+                      />
+                    )}
+                    {clip.type === 'audio' && clip.src && (
+                      <AudioWaveform
+                        src={clip.src}
+                        durationSeconds={clip.width / PX_PER_SEC_BASE}
+                      />
+                    )}
+                    <div className="relative z-[1] flex items-center min-w-0 w-full">
+                      {clip.type === 'audio' && <Music size={12} className="mr-2 shrink-0 opacity-70" />}
+                      {clip.type === 'text' && <Type size={12} className="mr-2 shrink-0 opacity-50" />}
+                      <span className="truncate drop-shadow-[0_1px_1px_rgba(0,0,0,0.6)]">{getClipLabel(clip)}</span>
+                    </div>
 
-        {/* Boutons d'ajout de pistes */}
-        <div className="flex items-center gap-2 p-2 min-w-[10000px]">
-          <button
-            onClick={() => addTrack('video')}
-            className="flex items-center gap-1 px-3 py-1.5 text-xs bg-blue-600/20 hover:bg-blue-600/40 text-blue-400 rounded border border-blue-600/30 transition-all"
-            title="Ajouter une piste vidéo"
-          >
-            <Plus size={14} />
-            <Video size={14} />
-            <span>Piste Vidéo</span>
-          </button>
-          <button
-            onClick={() => addTrack('audio')}
-            className="flex items-center gap-1 px-3 py-1.5 text-xs bg-green-600/20 hover:bg-green-600/40 text-green-400 rounded border border-green-600/30 transition-all"
-            title="Ajouter une piste audio"
-          >
-            <Plus size={14} />
-            <AudioLines size={14} />
-            <span>Piste Audio</span>
-          </button>
+                    {/* Bouton de suppression (X rouge en haut à droite) */}
+                    <button
+                      type="button"
+                      onPointerDown={(e) => e.stopPropagation()}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        removeClip(clip.id);
+                      }}
+                      className="absolute top-0.5 right-0.5 w-5 h-5 rounded-full bg-red-600/90 hover:bg-red-500 text-white flex items-center justify-center z-30 shadow-md transition-transform active:scale-90 focus:outline-none focus:ring-2 focus:ring-red-400"
+                      style={{ touchAction: 'manipulation' }}
+                      title="Supprimer ce média"
+                      aria-label="Supprimer ce média"
+                    >
+                      <X size={11} strokeWidth={3} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            );
+          })}
+
+          {/* Boutons d'ajout de pistes */}
+          <div className="flex items-center gap-2 p-2" style={{ minWidth: contentWidth }}>
+            <button
+              onClick={() => addTrack('video')}
+              className="flex items-center gap-1 px-3 py-1.5 text-xs bg-blue-600/20 hover:bg-blue-600/40 text-blue-400 rounded border border-blue-600/30 transition-all"
+              title="Ajouter une piste vidéo"
+            >
+              <Plus size={14} />
+              <Video size={14} />
+              <span>Piste Vidéo</span>
+            </button>
+            <button
+              onClick={() => addTrack('audio')}
+              className="flex items-center gap-1 px-3 py-1.5 text-xs bg-green-600/20 hover:bg-green-600/40 text-green-400 rounded border border-green-600/30 transition-all"
+              title="Ajouter une piste audio"
+            >
+              <Plus size={14} />
+              <AudioLines size={14} />
+              <span>Piste Audio</span>
+            </button>
+          </div>
         </div>
       </div>
     </div>

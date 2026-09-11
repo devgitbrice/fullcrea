@@ -114,8 +114,10 @@ export async function upsertProject(
   if (sErr) throw pgError('Écriture fullcrea_project_settings échouée', sErr);
 
   // Clips d'abord (FK vers tracks), puis tracks
-  await supabase.from('fullcrea_clips').delete().eq('project_id', p.id);
-  await supabase.from('fullcrea_tracks').delete().eq('project_id', p.id);
+  const { error: cDelErr } = await supabase.from('fullcrea_clips').delete().eq('project_id', p.id);
+  if (cDelErr) throw pgError('Purge fullcrea_clips échouée', cDelErr);
+  const { error: tDelErr } = await supabase.from('fullcrea_tracks').delete().eq('project_id', p.id);
+  if (tDelErr) throw pgError('Purge fullcrea_tracks échouée', tDelErr);
 
   if (p.tracks.length > 0) {
     const { error: tErr } = await supabase.from('fullcrea_tracks').insert(
@@ -153,7 +155,8 @@ export async function upsertProject(
   // Assets : on filtre les blob: URLs (créées via URL.createObjectURL),
   // qui ne survivent pas à un reload donc inutiles à persister.
   const persistableAssets = p.assets.filter((a) => !a.src.startsWith('blob:'));
-  await supabase.from('fullcrea_assets').delete().eq('project_id', p.id);
+  const { error: aDelErr } = await supabase.from('fullcrea_assets').delete().eq('project_id', p.id);
+  if (aDelErr) throw pgError('Purge fullcrea_assets échouée', aDelErr);
   if (persistableAssets.length > 0) {
     const { error: aErr } = await supabase.from('fullcrea_assets').insert(
       persistableAssets.map((a) => ({
@@ -172,7 +175,8 @@ export async function deleteProjectRow(
   supabase: SupabaseClient,
   projectId: string
 ): Promise<void> {
-  await supabase.from('fullcrea_projects').delete().eq('id', projectId);
+  const { error } = await supabase.from('fullcrea_projects').delete().eq('id', projectId);
+  if (error) throw pgError('Suppression fullcrea_projects échouée', error);
 }
 
 // --- Storage : upload d'un fichier importé ---

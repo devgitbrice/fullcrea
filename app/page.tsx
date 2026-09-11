@@ -12,6 +12,7 @@ import TextPropertyPanel from '@/components/editor/TextPropertyPanel';
 import { ProjectProvider, useProject } from '@/components/ProjectContext';
 import AuthGate from '@/components/AuthGate';
 import QuickLinks from '@/components/QuickLinks';
+import { ToastProvider } from '@/components/Toast';
 
 function EditorLayout() {
   const { currentView } = useProject();
@@ -72,10 +73,12 @@ function EditorLayout() {
 
 export default function EditorPage() {
   return (
-    <AuthGate>
-      <ProjectProvider>
-         <EditorLayout />
-      </ProjectProvider>
-    </AuthGate>
+    <ToastProvider>
+      <AuthGate>
+        <ProjectProvider>
+           <EditorLayout />
+        </ProjectProvider>
+      </AuthGate>
+    </ToastProvider>
   );
 }

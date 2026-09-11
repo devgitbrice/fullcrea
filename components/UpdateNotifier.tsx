@@ -75,7 +75,7 @@ export default function UpdateNotifier() {
   return (
     <div className="fixed bottom-4 left-1/2 z-[200] w-[calc(100%-2rem)] max-w-sm -translate-x-1/2 rounded-lg border border-gray-800 bg-gray-950 p-4 shadow-2xl">
       <p className="mb-3 text-sm text-gray-200">
-        Une nouvelle version de l'application est disponible.
+        Une nouvelle version de l&apos;application est disponible.
       </p>
       <div className="flex justify-end gap-2">
         <button
