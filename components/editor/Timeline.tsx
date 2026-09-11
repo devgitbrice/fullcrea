@@ -7,6 +7,12 @@ import { useProject, Clip } from '@/components/ProjectContext';
 import { useToast } from '@/components/Toast';
 import TimelineToolbar from './TimelineToolbar';
 import AudioWaveform from './AudioWaveform';
+import {
+  ASSET_ADD_EVENT,
+  ASSET_DROP_EVENT,
+  type AssetAddPayload,
+  type AssetDropPayload,
+} from '@/lib/assetDrag';
 
 const PX_PER_SEC_BASE = 30;
 const SNAP_THRESHOLD_PX = 10;
@@ -502,54 +508,100 @@ export default function Timeline() {
     e.preventDefault();
     e.dataTransfer.dropEffect = "copy";
   };
+
+  /** Insère un média de la bibliothèque à la position (en px timeline) donnée. */
+  const insertAsset = useCallback((asset: { name: string; type: string; src: string }, atPx: number) => {
+    const isVideo = asset.type.startsWith('video');
+    const isAudio = asset.type.startsWith('audio');
+    const clipType: Clip['type'] = isVideo ? 'video' : isAudio ? 'audio' : 'image';
+
+    // Choisir une piste valide qui correspond au type
+    const targetTrackType = isAudio ? 'audio' : 'video';
+    const targetTrack = tracks.find(t => t.type === targetTrackType);
+    if (!targetTrack) {
+      toast({ type: 'error', message: `Aucune piste ${targetTrackType} disponible` });
+      return;
+    }
+
+    const newId = `clip_${Date.now()}`;
+    const initialWidth = 150;
+    const newClip: Clip = {
+      id: newId,
+      name: asset.name,
+      type: clipType,
+      track: targetTrack.id,
+      start: Math.max(0, atPx),
+      width: initialWidth,
+      src: asset.src,
+    };
+    setClips(prev => [...prev, newClip]);
+    setSelectedClipId(newId);
+
+    // Probe la durée naturelle pour étirer le clip à sa vraie durée
+    if (isVideo || isAudio) {
+      probeMediaDuration(asset.src, isVideo ? 'video' : 'audio').then(duration => {
+        if (!duration) return;
+        const naturalWidth = duration * PX_PER_SEC_BASE;
+        setClips(prev => prev.map(c =>
+          c.id === newId ? { ...c, width: naturalWidth } : c
+        ));
+      });
+    }
+  }, [tracks, setClips, setSelectedClipId, toast]);
+
+  /** Convertit une abscisse viewport en position (px) sur la timeline. */
+  const timelinePosFromClientX = useCallback((clientX: number): number | null => {
+    const el = timelineRef.current;
+    if (!el) return null;
+    const rect = el.getBoundingClientRect();
+    return ((clientX - rect.left) + el.scrollLeft) / zoomLevel;
+  }, [zoomLevel]);
+
   const handleDrop = async (e: DragEvent<HTMLDivElement>) => {
     e.preventDefault();
-    if (!timelineRef.current) return;
-    const rect = timelineRef.current.getBoundingClientRect();
-    const dropX = ((e.clientX - rect.left) + timelineRef.current.scrollLeft) / zoomLevel;
-    const dataString = e.dataTransfer.getData("application/react-dnd");
+    const dropX = timelinePosFromClientX(e.clientX);
+    if (dropX === null) return;
+    // Safari n'expose pas toujours le type MIME personnalisé : fallback text/plain.
+    const dataString = e.dataTransfer.getData("application/react-dnd")
+      || e.dataTransfer.getData("text/plain");
     if (!dataString) return;
-    const data = JSON.parse(dataString);
+    let data: { isNew?: boolean; id?: string; name: string; type: string; src: string };
+    try {
+      data = JSON.parse(dataString);
+    } catch {
+      return; // texte quelconque déposé sur la timeline
+    }
+    if (!data || typeof data.type !== 'string' || typeof data.src !== 'string') return;
 
     const snappedStart = getSnappedPosition(dropX, data.isNew ? undefined : data.id);
 
     if (data.isNew) {
-      const isVideo = data.type.startsWith('video');
-      const isAudio = data.type.startsWith('audio');
-      const clipType: Clip['type'] = isVideo ? 'video' : isAudio ? 'audio' : 'image';
-
-      // Choisir une piste valide qui correspond au type
-      const targetTrackType = isAudio ? 'audio' : 'video';
-      const targetTrack = tracks.find(t => t.type === targetTrackType);
-      if (!targetTrack) return;
-
-      const newId = `clip_${Date.now()}`;
-      const initialWidth = 150;
-      const newClip: Clip = {
-        id: newId,
-        name: data.name,
-        type: clipType,
-        track: targetTrack.id,
-        start: Math.max(0, snappedStart),
-        width: initialWidth,
-        src: data.src,
-      };
-      setClips(prev => [...prev, newClip]);
-
-      // Probe la durée naturelle pour étirer le clip à sa vraie durée
-      if (isVideo || isAudio) {
-        probeMediaDuration(data.src, isVideo ? 'video' : 'audio').then(duration => {
-          if (!duration) return;
-          const naturalWidth = duration * PX_PER_SEC_BASE;
-          setClips(prev => prev.map(c =>
-            c.id === newId ? { ...c, width: naturalWidth } : c
-          ));
-        });
-      }
+      insertAsset(data, snappedStart);
     } else {
       setClips(prev => prev.map(c => c.id === data.id ? { ...c, start: Math.max(0, snappedStart) } : c));
     }
   };
+
+  // Dépôt par Pointer Events depuis la bibliothèque (seul chemin qui marche sur
+  // iPad et Safari, où le drag HTML5 est indisponible ou bloqué).
+  useEffect(() => {
+    const onDrop = (e: Event) => {
+      const { name, type, src, clientX } = (e as CustomEvent<AssetDropPayload>).detail;
+      const dropX = timelinePosFromClientX(clientX);
+      if (dropX === null) return;
+      insertAsset({ name, type, src }, getSnappedPosition(dropX));
+    };
+    const onAdd = (e: Event) => {
+      const { name, type, src } = (e as CustomEvent<AssetAddPayload>).detail;
+      insertAsset({ name, type, src }, Math.max(0, currentTimeRef.current));
+    };
+    window.addEventListener(ASSET_DROP_EVENT, onDrop);
+    window.addEventListener(ASSET_ADD_EVENT, onAdd);
+    return () => {
+      window.removeEventListener(ASSET_DROP_EVENT, onDrop);
+      window.removeEventListener(ASSET_ADD_EVENT, onAdd);
+    };
+  }, [insertAsset, timelinePosFromClientX, getSnappedPosition, currentTimeRef]);
 
   // --- STYLES & FILTRES ---
   const getClipStyle = useCallback((type: string) => {

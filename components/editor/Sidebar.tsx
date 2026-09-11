@@ -199,7 +199,7 @@ export default function Sidebar() {
                 </button>
               </div>
               <div className="text-[10px] text-gray-600 text-center">
-                Glissez ensuite un média sur la timeline
+                Glissez un média sur la timeline, ou « + » pour l&apos;insérer
               </div>
             </div>
 
@@ -236,7 +236,7 @@ export default function Sidebar() {
           </div>
 
           {/* --- CONTENU SCROLLABLE --- */}
-          <div className="flex-1 overflow-y-auto p-2 space-y-6 custom-scrollbar">
+          <div className="flex-1 overflow-y-auto p-2 space-y-6 custom-scrollbar" style={{ touchAction: 'pan-y' }}>
 
             <div>
               <div className="flex items-center gap-2 text-xs font-semibold text-gray-500 uppercase px-2 mb-2">
