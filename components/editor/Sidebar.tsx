@@ -203,6 +203,8 @@ export default function Sidebar() {
               </div>
             </div>
 
+            <CreationSection />
+
             {/* Bandeau d'avertissement persistance dégradée */}
             {persistenceMode === 'local-fallback' && (
               <div className="text-[11px] text-amber-300 bg-amber-950/40 border border-amber-900 rounded p-2 flex items-start gap-2">
@@ -269,7 +271,6 @@ export default function Sidebar() {
               </div>
             </div>
 
-            <CreationSection />
 
             {currentView === 'music' && (
               <div className="animate-in slide-in-from-left-4 duration-300">

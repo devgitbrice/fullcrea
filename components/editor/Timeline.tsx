@@ -82,6 +82,7 @@ export default function Timeline() {
     currentTime,
     setCurrentTime,
     currentView,
+    setCurrentView,
     activeTool,
     setActiveTool,
     zoomLevel,
@@ -93,6 +94,7 @@ export default function Timeline() {
     currentTimeRef,
     tracks,
     addTrack,
+    ensureTrack,
     textTrackId,
   } = useProject();
   const { toast } = useToast();
@@ -515,13 +517,14 @@ export default function Timeline() {
     const isAudio = asset.type.startsWith('audio');
     const clipType: Clip['type'] = isVideo ? 'video' : isAudio ? 'audio' : 'image';
 
-    // Choisir une piste valide qui correspond au type
+    // Choisir une piste valide qui correspond au type. Les projets sans piste
+    // du bon type (anciens projets, ou piste supprimée) en reçoivent une.
     const targetTrackType = isAudio ? 'audio' : 'video';
-    const targetTrack = tracks.find(t => t.type === targetTrackType);
-    if (!targetTrack) {
-      toast({ type: 'error', message: `Aucune piste ${targetTrackType} disponible` });
-      return;
-    }
+    const targetTrackId = ensureTrack(targetTrackType);
+
+    // La vue musique masque les pistes vidéo : on bascule pour que le clip
+    // déposé soit visible.
+    if (targetTrackType === 'video' && currentView !== 'video') setCurrentView('video');
 
     const newId = `clip_${Date.now()}`;
     const initialWidth = 150;
@@ -529,7 +532,7 @@ export default function Timeline() {
       id: newId,
       name: asset.name,
       type: clipType,
-      track: targetTrack.id,
+      track: targetTrackId,
       start: Math.max(0, atPx),
       width: initialWidth,
       src: asset.src,
@@ -547,7 +550,7 @@ export default function Timeline() {
         ));
       });
     }
-  }, [tracks, setClips, setSelectedClipId, toast]);
+  }, [ensureTrack, currentView, setCurrentView, setClips, setSelectedClipId]);
 
   /** Convertit une abscisse viewport en position (px) sur la timeline. */
   const timelinePosFromClientX = useCallback((clientX: number): number | null => {

@@ -139,6 +139,7 @@ interface ProjectContextType {
   projectDurationPx: number;
   tracks: Track[];
   addTrack: (type: 'video' | 'audio') => void;
+  ensureTrack: (type: 'video' | 'audio') => number;
   textTrackId: number;
   assets: Asset[];
   setAssets: Dispatch<SetStateAction<Asset[]>>;
@@ -464,6 +465,31 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
       };
     }, true);
   }, [updateCurrentProjectWithHistory]);
+
+  /**
+   * Renvoie l'id d'une piste du type demandé, en la créant si le projet n'en
+   * possède aucune (projets anciens ou importés sans piste vidéo/audio).
+   */
+  const ensureTrack = useCallback((type: 'video' | 'audio'): number => {
+    const project = projectsRef.current.find(p => p.id === currentProjectId);
+    const existing = project?.tracks.find(t => t.type === type);
+    if (existing) return existing.id;
+
+    const newId = Math.max(...(project?.tracks.map(t => t.id) ?? []), 0) + 1;
+    updateCurrentProjectWithHistory(p => {
+      if (p.tracks.some(t => t.type === type)) return p;
+      const count = p.tracks.filter(t => t.type === type).length + 1;
+      return {
+        ...p,
+        tracks: [...p.tracks, {
+          id: newId,
+          type,
+          name: `${type === 'video' ? 'Video' : 'Audio'} ${count}`
+        }]
+      };
+    }, true);
+    return newId;
+  }, [currentProjectId, updateCurrentProjectWithHistory]);
 
   const setCurrentView = useCallback((view: ViewMode) => {
     updateCurrentProject(p => ({ ...p, currentView: view }));
@@ -876,7 +902,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
       isPlaying, togglePlay, currentTime, setCurrentTime,
       currentTimeRef, subscribeToTime,
       clips: currentProject.clips, setClips, setClipsWithoutHistory, deleteClip, duplicateClip, projectDurationPx,
-      tracks: currentProject.tracks, addTrack,
+      tracks: currentProject.tracks, addTrack, ensureTrack,
       textTrackId: (currentProject.tracks.find(t => t.type === 'text')?.id ?? TEXT_TRACK_ID),
       assets: currentProject.assets, setAssets,
       previewAsset, setPreviewAsset, scale: PX_PER_SEC_BASE * zoomLevel,
