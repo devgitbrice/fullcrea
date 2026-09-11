@@ -4,7 +4,6 @@ import { shouldIgnoreShortcut } from '@/lib/keyboard';
 import { useEffect } from 'react';
 import { Copy, MousePointer2, Redo2, Scissors, Trash2, Type, Undo2, type LucideIcon } from 'lucide-react';
 import { useProject, type ToolMode } from '@/components/ProjectContext';
-import { useToast } from '@/components/Toast';
 import ZoomControls from './ZoomControls';
 
 interface ToolDefinition {
@@ -54,12 +53,12 @@ function Separator({ className = '' }: { className?: string }) {
 }
 
 interface TimelineToolbarProps {
-  // Fourni par la Timeline (removeClip) pour partager son toast « Clip supprimé »
-  // et sa restauration ciblée ; sans lui, on retombe sur deleteClip + undo.
-  onDeleteClip?: (id: string) => void;
+  // Fourni par la Timeline (removeClips) : suppression + toast « Annuler »
+  // (undoIfTop), un seul chemin pour le clavier, le X et la toolbar.
+  onDeleteClips: (ids: string[]) => void;
 }
 
-export default function TimelineToolbar({ onDeleteClip }: TimelineToolbarProps) {
+export default function TimelineToolbar({ onDeleteClips }: TimelineToolbarProps) {
   const {
     activeTool,
     setActiveTool,
@@ -67,20 +66,9 @@ export default function TimelineToolbar({ onDeleteClip }: TimelineToolbarProps) 
     redo,
     canUndo,
     canRedo,
-    selectedClipId,
-    deleteClip,
-    duplicateClip,
+    selectedClipIds,
+    duplicateClips,
   } = useProject();
-  const { toast } = useToast();
-
-  const handleDeleteClip = (id: string) => {
-    if (onDeleteClip) {
-      onDeleteClip(id);
-      return;
-    }
-    deleteClip(id);
-    toast({ message: 'Clip supprimé', type: 'info', action: { label: 'Annuler', onClick: undo } });
-  };
 
   // Raccourcis outils : ignorés avec un modificateur (Ctrl+C = copier, pas le
   // cutter), pendant la saisie de texte et sur les répétitions de touche.
@@ -148,23 +136,23 @@ export default function TimelineToolbar({ onDeleteClip }: TimelineToolbarProps) 
         Outil actuel : <span className={currentTool.textClass}>{currentTool.label}</span>
       </span>
 
-      {/* Actions sur le clip sélectionné (raccourcis gérés par la Timeline) */}
-      {selectedClipId && (
+      {/* Actions sur la sélection (raccourcis gérés par la Timeline) */}
+      {selectedClipIds.length > 0 && (
         <>
           <Separator />
           <button
-            onClick={() => duplicateClip(selectedClipId)}
+            onClick={() => duplicateClips(selectedClipIds)}
             className={actionButtonClass}
             title="Dupliquer (Ctrl+D)"
-            aria-label="Dupliquer le clip (Ctrl+D)"
+            aria-label="Dupliquer la sélection (Ctrl+D)"
           >
             <Copy size={16} />
           </button>
           <button
-            onClick={() => handleDeleteClip(selectedClipId)}
+            onClick={() => onDeleteClips(selectedClipIds)}
             className={`${actionButtonClass} hover:text-red-400`}
             title="Supprimer (Suppr)"
-            aria-label="Supprimer le clip (Suppr)"
+            aria-label="Supprimer la sélection (Suppr)"
           >
             <Trash2 size={16} />
           </button>

@@ -2,12 +2,14 @@
 
 import { fetchFile } from '@ffmpeg/util';
 import { getFFmpeg } from './ffmpeg';
-import type { Clip } from '@/components/ProjectContext';
+import type { Clip, Track } from '@/lib/timeline/types';
+import { buildVideoSegments, exportableAudioClips } from '@/lib/timeline/segments';
 
 export type RenderProgress = (info: { stage: string; percent: number }) => void;
 
 interface RenderOptions {
   clips: Clip[];
+  tracks: Track[];
   pixelsPerSecond: number; // pour convertir start_px / width_px en secondes
   width: number;
   height: number;
@@ -25,23 +27,30 @@ function concatEscape(name: string): string {
   return name.replace(/'/g, "'\\''");
 }
 
+const fmt = (sec: number) => Math.max(0, sec).toFixed(3);
+
 /**
  * Rend la timeline vidéo en MP4.
  *
- * Stratégie v1 :
- *  1. Pour chaque clip image/vidéo (pistes vidéo) : on génère un segment MP4
- *     normalisé (résolution + fps cibles, codec H.264, audio AAC silencieux).
- *  2. On les concatène dans l'ordre du `start`.
- *  3. On mixe tous les clips audio des pistes audio en une piste WAV.
- *  4. On mux la vidéo concaténée et l'audio mixé.
+ * Stratégie (balayage des points de montage, cf. lib/timeline/segments.ts) :
+ *  1. La timeline est découpée aux starts/ends des clips visuels ; sur chaque
+ *     intervalle, le clip de la piste du dessus gagne (couches respectées) et
+ *     un trou donne un segment noir. Chaque segment est encodé en MP4 normalisé
+ *     (résolution + fps cibles, H.264, audio AAC 44,1 kHz stéréo — toujours
+ *     présent, silence compris, condition du concat `-c copy`).
+ *  2. Concat des segments → video_only.mp4 (commence à t = 0, dure jusqu'à la
+ *     fin du dernier clip visuel OU audio, pour que `adelay` reste absolu).
+ *  3. Chaque clip audio (piste audio non muette, clip non muet) est extrait à
+ *     son point d'entrée, avec volume puis délai absolu.
+ *  4. Mux final : l'audio des vidéos est conservé et mixé avec les clips audio.
  *
- * Limitations v1 :
+ * Limitations restantes :
  *  - Pas de texte overlay (clips type 'text' ignorés)
  *  - Pas de transformations (rotation/scale/position) — chaque clip est juste mis à l'échelle
- *  - Pas de gestion des "gaps" : on suppose que les clips se suivent
  */
 export async function renderProjectToMp4({
   clips,
+  tracks,
   pixelsPerSecond,
   width,
   height,
@@ -54,76 +63,96 @@ export async function renderProjectToMp4({
     onProgress?.({ stage, percent });
   };
 
-  // 1) Trie & filtre les clips visuels (vidéo + image) par start
-  const visualClips = clips
-    .filter((c) => c.type === 'video' || c.type === 'image')
-    .filter((c) => !!c.src)
-    .sort((a, b) => a.start - b.start);
+  // 1) Segments vidéo (couches + trous) et clips audio exportables
+  const segments = buildVideoSegments(clips, tracks, pixelsPerSecond, fps);
+  const audioClips = exportableAudioClips(clips, tracks);
 
-  if (visualClips.length === 0) {
+  if (segments.length === 0) {
     throw new Error('Aucun clip vidéo ou image à exporter.');
   }
 
-  const audioClips = clips.filter((c) => c.type === 'audio' && !!c.src);
+  const trackById = new Map(tracks.map((t) => [t.id, t]));
+  const scaleFilter = `scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:black,fps=${fps}`;
+  const encodeArgs = ['-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-preset', 'ultrafast', '-c:a', 'aac', '-ar', '44100', '-ac', '2'];
 
-  // 2) Génère un segment MP4 normalisé par clip visuel
+  // Une source utilisée par plusieurs segments (A/B/A) n'est écrite qu'une fois
+  const inputBySrc = new Map<string, string>();
+  const inputFor = async (clip: Clip): Promise<string> => {
+    const cached = inputBySrc.get(clip.src);
+    if (cached) return cached;
+    const name = `vin_${inputBySrc.size}${clip.type === 'video' ? '.mp4' : '.img'}`;
+    await ff.writeFile(name, await fetchBytes(clip.src));
+    inputBySrc.set(clip.src, name);
+    return name;
+  };
+
   report('Préparation des clips…', 0);
   const segmentNames: string[] = [];
   let processed = 0;
-  const total = visualClips.length + audioClips.length;
+  const total = segments.length + audioClips.length;
 
-  for (let i = 0; i < visualClips.length; i++) {
-    const clip = visualClips[i];
-    const durationSec = Math.max(0.04, clip.width / pixelsPerSecond);
-    const inputName = `vin_${i}${clip.type === 'video' ? '.mp4' : '.img'}`;
+  for (let i = 0; i < segments.length; i++) {
+    const seg = segments[i];
+    const d = fmt(Math.max(0.04, seg.durationSec));
     const outName = `vseg_${i}.mp4`;
+    const clip = seg.clip;
 
-    await ff.writeFile(inputName, await fetchBytes(clip.src));
-
-    const scaleFilter = `scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:black,fps=${fps}`;
-
-    if (clip.type === 'image') {
-      // Boucle l'image pendant la durée voulue, encode H.264, ajoute une piste audio silencieuse.
+    if (!clip) {
+      // Segment noir (trou entre deux clips, ou avant le premier)
       await ff.exec([
-        '-loop', '1',
-        '-t', durationSec.toFixed(3),
-        '-i', inputName,
-        '-f', 'lavfi',
-        '-t', durationSec.toFixed(3),
-        '-i', 'anullsrc=r=44100:cl=stereo',
+        '-f', 'lavfi', '-t', d, '-i', `color=c=black:s=${width}x${height}:r=${fps}`,
+        '-f', 'lavfi', '-t', d, '-i', 'anullsrc=r=44100:cl=stereo',
+        ...encodeArgs,
+        '-shortest',
+        '-y',
+        outName,
+      ]);
+    } else if (clip.type === 'image') {
+      // Boucle l'image pendant la durée voulue, encode H.264, ajoute une piste audio silencieuse.
+      const inputName = await inputFor(clip);
+      await ff.exec([
+        '-loop', '1', '-t', d, '-i', inputName,
+        '-f', 'lavfi', '-t', d, '-i', 'anullsrc=r=44100:cl=stereo',
         '-vf', scaleFilter,
-        '-c:v', 'libx264',
-        '-pix_fmt', 'yuv420p',
-        '-preset', 'ultrafast',
-        '-c:a', 'aac',
+        ...encodeArgs,
         '-shortest',
         '-y',
         outName,
       ]);
     } else {
-      // Clip vidéo : trim à la durée du clip et normalise.
-      await ff.exec([
-        '-i', inputName,
-        '-t', durationSec.toFixed(3),
-        '-vf', scaleFilter,
-        '-c:v', 'libx264',
-        '-pix_fmt', 'yuv420p',
-        '-preset', 'ultrafast',
-        '-c:a', 'aac',
-        '-ar', '44100',
-        '-ac', '2',
-        '-y',
-        outName,
-      ]);
+      // Clip vidéo : lu à partir de son point d'entrée, deux entrées (source +
+      // silence) pour garantir un flux audio même si la source n'en a pas.
+      const inputName = await inputFor(clip);
+      const muted = !!clip.muted || !!trackById.get(clip.track)?.muted;
+      const head = [
+        '-ss', fmt(seg.inSec), '-i', inputName,
+        '-f', 'lavfi', '-t', d, '-i', 'anullsrc=r=44100:cl=stereo',
+        '-t', d, '-vf', scaleFilter,
+      ];
+      const tail = [...encodeArgs, '-y', outName];
+      const silentArgs = [...head, '-map', '0:v:0', '-map', '1:a:0', ...tail];
+      if (muted) {
+        await ff.exec(silentArgs);
+      } else {
+        const volume = Math.min(1, Math.max(0, clip.volume ?? 1)).toFixed(3);
+        const code = await ff.exec([
+          ...head,
+          '-filter_complex', `[0:a]volume=${volume}[va];[va][1:a]amix=inputs=2:duration=longest:normalize=0[a]`,
+          '-map', '0:v:0', '-map', '[a]',
+          ...tail,
+        ]);
+        // Source sans flux audio ([0:a] introuvable) : on relance avec le silence
+        if (code !== 0) await ff.exec(silentArgs);
+      }
     }
 
-    await ff.deleteFile(inputName).catch(() => undefined);
     segmentNames.push(outName);
     processed++;
     report(`Préparation des clips… (${processed}/${total})`, (processed / total) * 50);
   }
+  for (const name of inputBySrc.values()) await ff.deleteFile(name).catch(() => undefined);
 
-  // 3) Concat des segments via le concat demuxer
+  // 2) Concat des segments via le concat demuxer
   report('Assemblage de la timeline…', 55);
   const listContent = segmentNames.map((n) => `file '${concatEscape(n)}'`).join('\n');
   await ff.writeFile('concat.txt', new TextEncoder().encode(listContent));
@@ -137,23 +166,23 @@ export async function renderProjectToMp4({
   ]);
   for (const n of segmentNames) await ff.deleteFile(n).catch(() => undefined);
 
-  // 4) Audio des pistes audio (si présentes), mixé
-  let audioPath: string | null = null;
+  // 3) Clips audio : point d'entrée, volume puis délai absolu (une seule chaîne -af)
+  const audioInputs: string[] = [];
   if (audioClips.length > 0) {
-    report('Mixage audio…', 70);
-    const audioInputs: string[] = [];
+    report('Mixage audio…', 60);
     for (let i = 0; i < audioClips.length; i++) {
       const clip = audioClips[i];
       const durationSec = Math.max(0.04, clip.width / pixelsPerSecond);
       const inputName = `ain_${i}.bin`;
       const outName = `aseg_${i}.wav`;
       await ff.writeFile(inputName, await fetchBytes(clip.src));
-      // Délai = position de départ (en ms), pour que les clips audio se placent au bon moment.
       const startMs = Math.round((clip.start / pixelsPerSecond) * 1000);
+      const volume = Math.min(1, Math.max(0, clip.volume ?? 1)).toFixed(3);
       await ff.exec([
+        '-ss', fmt((clip.offset ?? 0) / pixelsPerSecond),
         '-i', inputName,
-        '-t', durationSec.toFixed(3),
-        '-af', `adelay=${startMs}|${startMs}`,
+        '-t', fmt(durationSec),
+        '-af', `volume=${volume},adelay=${startMs}|${startMs}`,
         '-ar', '44100',
         '-ac', '2',
         '-y',
@@ -162,42 +191,28 @@ export async function renderProjectToMp4({
       await ff.deleteFile(inputName).catch(() => undefined);
       audioInputs.push(outName);
       processed++;
-      report(`Mixage audio… (${processed}/${total})`, 70 + (processed / total) * 15);
-    }
-
-    // Mix de toutes les pistes audio
-    if (audioInputs.length === 1) {
-      audioPath = audioInputs[0];
-    } else {
-      const mixArgs: string[] = [];
-      for (const a of audioInputs) mixArgs.push('-i', a);
-      mixArgs.push(
-        '-filter_complex', `amix=inputs=${audioInputs.length}:normalize=0`,
-        '-c:a', 'aac',
-        '-y',
-        'audio_mix.aac',
-      );
-      await ff.exec(mixArgs);
-      for (const a of audioInputs) await ff.deleteFile(a).catch(() => undefined);
-      audioPath = 'audio_mix.aac';
+      report(`Mixage audio… (${processed}/${total})`, 50 + (processed / total) * 35);
     }
   }
 
-  // 5) Mux final : remplace la piste audio des vidéos par le mix (si présent),
-  //    sinon on garde l'audio des vidéos d'origine.
+  // 4) Mux final : l'audio des vidéos (déjà dans video_only.mp4) est mixé
+  //    avec les clips audio ; `duration=first` = durée de la vidéo, qui couvre
+  //    déjà la fin globale.
   report('Encodage final…', 90);
-  if (audioPath) {
-    await ff.exec([
-      '-i', 'video_only.mp4',
-      '-i', audioPath,
+  if (audioInputs.length > 0) {
+    const args: string[] = ['-i', 'video_only.mp4'];
+    for (const a of audioInputs) args.push('-i', a);
+    const labels = audioInputs.map((_, i) => `[${i + 1}:a]`).join('');
+    args.push(
+      '-filter_complex', `[0:a]${labels}amix=inputs=${audioInputs.length + 1}:duration=first:normalize=0[a]`,
       '-map', '0:v:0',
-      '-map', '1:a:0',
+      '-map', '[a]',
       '-c:v', 'copy',
       '-c:a', 'aac',
-      '-shortest',
       '-y',
       'output.mp4',
-    ]);
+    );
+    await ff.exec(args);
   } else {
     await ff.exec(['-i', 'video_only.mp4', '-c', 'copy', '-y', 'output.mp4']);
   }
@@ -206,7 +221,7 @@ export async function renderProjectToMp4({
   await ff.deleteFile('video_only.mp4').catch(() => undefined);
   await ff.deleteFile('output.mp4').catch(() => undefined);
   await ff.deleteFile('concat.txt').catch(() => undefined);
-  if (audioPath) await ff.deleteFile(audioPath).catch(() => undefined);
+  for (const a of audioInputs) await ff.deleteFile(a).catch(() => undefined);
 
   report('Terminé', 100);
   // data peut être Uint8Array | string ; ici on est binaire.

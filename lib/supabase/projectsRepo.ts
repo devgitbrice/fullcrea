@@ -1,7 +1,8 @@
 "use client";
 
 import { SupabaseClient } from '@supabase/supabase-js';
-import type { Project, Asset, Track, Clip } from '@/components/ProjectContext';
+import type { Project, Asset, Track, Clip, Marker } from '@/lib/timeline/types';
+import { EMPTY_MARKERS } from '@/lib/timeline/types';
 import { STORAGE_BUCKET } from './client';
 
 // Supabase renvoie des PostgrestError qui ne sont PAS des Error.
@@ -37,10 +38,16 @@ export async function fetchAllProjects(supabase: SupabaseClient, userId: string)
     const tracks: Track[] = (tracksRes.data ?? [])
       .filter((t: { project_id: string }) => t.project_id === p.id)
       .sort((a: { track_index: number }, b: { track_index: number }) => a.track_index - b.track_index)
-      .map((t: { track_index: number; type: 'video' | 'audio'; name: string }) => ({
+      .map((t: {
+        track_index: number; type: 'video' | 'audio' | 'text'; name: string;
+        muted?: boolean | null; hidden?: boolean | null; locked?: boolean | null;
+      }) => ({
         id: t.track_index,
         type: t.type,
         name: t.name,
+        muted: t.muted || undefined,
+        hidden: t.hidden || undefined,
+        locked: t.locked || undefined,
       }));
     const assets: Asset[] = (assetsRes.data ?? [])
       .filter((a: { project_id: string }) => a.project_id === p.id)
@@ -56,6 +63,8 @@ export async function fetchAllProjects(supabase: SupabaseClient, userId: string)
         id: string; name: string;
         type: 'video' | 'audio' | 'image' | 'text';
         track_index: number; start_px: number; width_px: number; src: string;
+        offset_px?: number | null; source_duration_px?: number | null;
+        volume?: number | null; muted?: boolean | null;
         transform: Clip['transform'] | null;
         text_content: string | null; font_size: number | null;
         font_family: string | null; text_color: string | null;
@@ -67,6 +76,10 @@ export async function fetchAllProjects(supabase: SupabaseClient, userId: string)
         start: c.start_px,
         width: c.width_px,
         src: c.src,
+        offset: c.offset_px || undefined,
+        sourceDuration: c.source_duration_px ?? undefined,
+        volume: c.volume ?? undefined,
+        muted: c.muted || undefined,
         transform: c.transform ?? undefined,
         text: c.text_content ?? undefined,
         fontSize: c.font_size ?? undefined,
@@ -84,6 +97,7 @@ export async function fetchAllProjects(supabase: SupabaseClient, userId: string)
       tracks,
       assets,
       clips,
+      markers: Array.isArray(p.markers) ? (p.markers as Marker[]) : EMPTY_MARKERS,
     } satisfies Project;
   });
 }
@@ -102,6 +116,7 @@ export async function upsertProject(
     user_id: userId,
     name: p.name,
     current_view: p.currentView,
+    markers: p.markers,
   });
   if (pErr) throw pgError('Écriture fullcrea_projects échouée', pErr);
 
@@ -126,14 +141,26 @@ export async function upsertProject(
         track_index: t.id,
         type: t.type,
         name: t.name,
+        muted: !!t.muted,
+        hidden: !!t.hidden,
+        locked: !!t.locked,
       }))
     );
     if (tErr) throw pgError('Écriture fullcrea_tracks échouée', tErr);
   }
 
-  if (p.clips.length > 0) {
+  // Garde anti-orphelins : la FK (project_id, track_index) refuserait un clip
+  // dont la piste n'existe plus (les clips texte sont rapatriés sur la piste
+  // texte par ensureTextTrack, jamais orphelins).
+  const trackIds = new Set(p.tracks.map((t) => t.id));
+  const safeClips = p.clips.filter((c) => {
+    if (trackIds.has(c.track)) return true;
+    console.warn(`[fullcrea] Clip ${c.id} ignoré à la sauvegarde : piste ${c.track} inexistante`);
+    return false;
+  });
+  if (safeClips.length > 0) {
     const { error: cErr } = await supabase.from('fullcrea_clips').insert(
-      p.clips.map((c) => ({
+      safeClips.map((c) => ({
         id: c.id,
         project_id: p.id,
         track_index: c.track,
@@ -142,6 +169,10 @@ export async function upsertProject(
         src: c.src ?? '',
         start_px: c.start,
         width_px: Math.max(c.width, 0.001),
+        offset_px: Math.max(0, c.offset ?? 0),
+        source_duration_px: c.sourceDuration ?? null,
+        volume: c.volume ?? null,
+        muted: !!c.muted,
         transform: c.transform ?? null,
         text_content: c.text ?? null,
         font_size: c.fontSize ?? null,

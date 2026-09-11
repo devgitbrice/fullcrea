@@ -6,17 +6,17 @@ import { SupabaseClient } from '@supabase/supabase-js';
 import { getSupabase, getCurrentUser } from '@/lib/supabase/client';
 import { fetchAllProjects, upsertProject, deleteProjectRow, uploadAsset } from '@/lib/supabase/projectsRepo';
 import { useBeforeUnload } from '@/lib/hooks/useBeforeUnload';
+import type { Clip, Track, Marker, ImageTransform, Asset, ViewMode, ProjectSettings, Project } from '@/lib/timeline/types';
+import { EMPTY_MARKERS, PX_PER_SEC_BASE } from '@/lib/timeline/types';
+import {
+  newId, clipEnd, splitClip, computeRipple, findFreeStart, findFreeGroupDelta,
+} from '@/lib/timeline/clipOps';
 
-// --- INTERFACES ---
-export interface ImageTransform {
-  rotationX: number;
-  rotationY: number;
-  rotationZ: number;
-  scaleX: number;
-  scaleY: number;
-  positionX: number;
-  positionY: number;
-}
+// --- TYPES DU MODÈLE ---
+// Définis dans lib/timeline/types.ts (helpers purs testables sans bundler) et
+// ré-exportés ici : les imports existants ne changent pas.
+export type { Clip, Track, Marker, ImageTransform, Asset, ViewMode, ProjectSettings, Project } from '@/lib/timeline/types';
+export { PX_PER_SEC_BASE, MIN_CLIP_WIDTH_PX, EMPTY_MARKERS } from '@/lib/timeline/types';
 
 export const defaultImageTransform: ImageTransform = {
   rotationX: 0,
@@ -28,52 +28,7 @@ export const defaultImageTransform: ImageTransform = {
   positionY: 0,
 };
 
-export interface Clip {
-  id: string;
-  name: string;
-  type: 'video' | 'audio' | 'image' | 'text';
-  track: number;
-  start: number;
-  width: number;
-  src: string;
-  transform?: ImageTransform;
-  text?: string;
-  fontSize?: number;
-  fontFamily?: string;
-  textColor?: string;
-}
-
-export interface Asset {
-  id: string;
-  name: string;
-  type: 'video' | 'audio' | 'image';
-  src: string;
-}
-
-export type ViewMode = 'video' | 'podcast' | 'music';
 export type ToolMode = 'select' | 'cut' | 'text';
-
-export interface Track {
-  id: number;
-  type: 'video' | 'audio' | 'text';
-  name: string;
-}
-
-export interface ProjectSettings {
-  width: number;
-  height: number;
-  fps: number;
-}
-
-export interface Project {
-  id: string;
-  name: string;
-  clips: Clip[];
-  tracks: Track[];
-  assets: Asset[];
-  projectSettings: ProjectSettings;
-  currentView: ViewMode;
-}
 
 type TimeSubscriber = (time: number) => void;
 
@@ -85,7 +40,18 @@ export type SaveStatus = 'idle' | 'dirty' | 'saving' | 'saved' | 'error';
 interface HistorySnapshot {
   clips: Clip[];
   tracks: Track[];
+  markers: Marker[];
 }
+
+// Jeton rendu par les actions discrètes : identifie l'entrée d'historique
+// qu'elles ont empilée. `undoIfTop` n'annule que si elle est encore au sommet
+// (rien n'a été fait depuis). Opaque pour les appelants.
+export interface HistoryToken {
+  readonly projectId: string;
+  readonly snapshot: HistorySnapshot;
+}
+
+export type SelectMode = 'replace' | 'toggle' | 'add' | 'range';
 
 interface ProjectHistory {
   undo: HistorySnapshot[];
@@ -112,7 +78,8 @@ interface ProjectContextType {
   lastSavedAt: Date | null;
   userEmail: string | null;
 
-  // Historique (undo/redo)
+  // Historique (undo/redo). Undo/redo ne restaurent pas la sélection (dérivée
+  // des clips : un clip disparu en sort automatiquement).
   undo: () => void;
   redo: () => void;
   canUndo: boolean;
@@ -120,6 +87,10 @@ interface ProjectContextType {
   // Geste explicite (drag/trim) : une seule entrée d'historique du début à la fin
   beginHistoryGesture: () => void;
   endHistoryGesture: () => void;
+  // Abandonne le geste en cours : restaure l'état d'avant sans entrée fantôme
+  cancelHistoryGesture: () => void;
+  // undo() seulement si l'entrée du jeton est encore au sommet de la pile
+  undoIfTop: (token: HistoryToken) => boolean;
 
   // Lecture
   isPlaying: boolean;
@@ -132,18 +103,37 @@ interface ProjectContextType {
   // Données du projet courant (proxy)
   clips: Clip[];
   setClips: Dispatch<SetStateAction<Clip[]>>;
-  // Mise à jour hors historique (ex. largeur naturelle d'un clip après probe async)
+  // Mise à jour hors historique (ex. durée réelle d'un clip après probe async)
   setClipsWithoutHistory: Dispatch<SetStateAction<Clip[]>>;
-  deleteClip: (id: string) => void;
-  duplicateClip: (id: string) => void;
+  // Lecture synchrone du dernier état commité (handlers d'événements natifs)
+  getClips: () => Clip[];
+  getTracks: () => Track[];
+  // Actions plurielles : chacune = exactement une entrée d'historique
+  insertClip: (clip: Omit<Clip, 'track'>, trackType: 'video' | 'audio') => { id: string; track: number };
+  deleteClips: (ids: string[]) => HistoryToken | null;
+  deleteClip: (id: string) => HistoryToken | null;
+  duplicateClips: (ids: string[]) => string[];
+  duplicateClip: (id: string) => string[];
+  rippleDeleteClips: (ids: string[]) => HistoryToken | null;
+  splitClipsAt: (ids: string[], timePx: number) => string[];
+  updateClips: (ids: string[], patch: Partial<Pick<Clip, 'volume' | 'muted'>>, discrete?: boolean) => void;
+  pasteClips: (source: Clip[], atPx: number) => string[];
   projectDurationPx: number;
   tracks: Track[];
-  addTrack: (type: 'video' | 'audio') => void;
-  ensureTrack: (type: 'video' | 'audio') => number;
+  addTrack: (type: 'video' | 'audio') => number;
+  ensureTrack: (type: 'video' | 'audio', opts?: { unlocked?: boolean }) => number;
+  updateTrack: (id: number, patch: Partial<Pick<Track, 'name' | 'muted' | 'hidden' | 'locked'>>) => void;
+  deleteTrack: (id: number) => HistoryToken | null;
   textTrackId: number;
   assets: Asset[];
   setAssets: Dispatch<SetStateAction<Asset[]>>;
   setProjectSettings: (settings: ProjectSettings) => void;
+
+  // Marqueurs (discrets)
+  markers: Marker[];
+  addMarker: (timePx: number) => string;
+  deleteMarker: (id: string) => void;
+  updateMarker: (id: string, patch: Partial<Pick<Marker, 'time' | 'label'>>) => void;
 
   // UI
   previewAsset: Asset | null;
@@ -156,14 +146,27 @@ interface ProjectContextType {
   setActiveTool: (tool: ToolMode) => void;
   zoomLevel: number;
   setZoomLevel: Dispatch<SetStateAction<number>>;
+  // Préférence hors projet et hors historique (localStorage `fullcrea_snap`)
+  snapEnabled: boolean;
+  setSnapEnabled: (v: boolean) => void;
+
+  // Sélection, dérivée des clips : jamais un id inexistant ni verrouillé
+  selectedClipIds: string[];
+  selectedClipIdSet: ReadonlySet<string>;
   selectedClipId: string | null;
-  setSelectedClipId: Dispatch<SetStateAction<string | null>>;
+  selectClip: (id: string, mode?: SelectMode) => void;
+  selectClips: (ids: string[], primary?: string) => void;
+  clearSelection: () => void;
+  // Compat : id ? selectClip(id, 'replace') : clearSelection()
+  setSelectedClipId: (id: string | null) => void;
+  selectAllClips: () => void;
 }
 
 const ProjectContext = createContext<ProjectContextType | undefined>(undefined);
 
 const DEFAULT_SETTINGS: ProjectSettings = { width: 1920, height: 1080, fps: 30 };
 const LOCAL_STORAGE_KEY = 'fullcrea_state_v1';
+const SNAP_STORAGE_KEY = 'fullcrea_snap';
 const SAVE_DEBOUNCE_MS = 600;
 // Fenêtre de regroupement pour les mutations sans geste explicite (saisie de
 // texte, nudges clavier) : les setClips rapprochés forment une seule entrée.
@@ -183,6 +186,10 @@ function getHistory(map: Map<string, ProjectHistory>, projectId: string): Projec
 // La piste texte est dédiée, séparée des pistes vidéo/audio.
 // On lui donne l'id 0 (réservé) pour qu'elle reste stable.
 export const TEXT_TRACK_ID = 0;
+
+const trackName = (type: 'video' | 'audio', tracks: Track[]) =>
+  `${type === 'video' ? 'Video' : 'Audio'} ${tracks.filter(t => t.type === type).length + 1}`;
+const nextTrackId = (tracks: Track[]) => Math.max(...tracks.map(t => t.id), 0) + 1;
 
 const buildDefaultTracks = (): Track[] => [
   { id: TEXT_TRACK_ID, type: 'text', name: 'Texte' },
@@ -208,12 +215,20 @@ function ensureTextTrack(project: Project): Project {
   return { ...project, tracks, clips };
 }
 
+// Projet lu depuis le cloud ou localStorage : piste texte garantie et
+// `markers` toujours un tableau (les projets antérieurs n'ont pas le champ).
+function normalizeProject(raw: Project): Project {
+  const p = ensureTextTrack(raw);
+  return { ...p, markers: Array.isArray(p.markers) ? p.markers : EMPTY_MARKERS };
+}
+
 const buildEmptyProject = (id: string, name: string): Project => ({
   id,
   name,
   clips: [],
   tracks: buildDefaultTracks(),
   assets: [],
+  markers: EMPTY_MARKERS,
   projectSettings: { ...DEFAULT_SETTINGS },
   currentView: 'video',
 });
@@ -231,6 +246,7 @@ const buildInitialDefaultProject = (): Project => ({
     { id: 'asset_2', name: 'background_loop.mp3', type: 'audio', src: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3' },
     { id: 'asset_3', name: 'logo_final.png', type: 'image', src: 'https://images.unsplash.com/photo-1472214103451-9374bd1c798e?auto=format&fit=crop&w=1000&q=80' },
   ],
+  markers: EMPTY_MARKERS,
   projectSettings: { ...DEFAULT_SETTINGS },
   currentView: 'video',
 });
@@ -251,9 +267,10 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
   const [previewAsset, setPreviewAsset] = useState<Asset | null>(null);
   const [activeTool, setActiveTool] = useState<ToolMode>('select');
   const [zoomLevel, setZoomLevel] = useState(1);
-  const [selectedClipId, setSelectedClipId] = useState<string | null>(null);
-
-  const PX_PER_SEC_BASE = 30;
+  // Seul état brut de sélection ; tout le reste (selectedClipIds, selectedClipId)
+  // est dérivé des clips et des pistes du projet courant.
+  const [selection, setSelection] = useState<{ ids: string[]; primary: string | null }>({ ids: [], primary: null });
+  const [snapEnabled, setSnapEnabledState] = useState(true);
 
   // --- PERSISTANCE ---
   const supabaseRef = useRef<SupabaseClient | null>(null);
@@ -315,11 +332,11 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
       ? gesture.pushed
       : now - lastPushAtRef.current < HISTORY_COALESCE_MS);
     const top = history.undo[history.undo.length - 1];
-    const unchanged = !!top && top.clips === project.clips && top.tracks === project.tracks;
+    const unchanged = !!top && top.clips === project.clips && top.tracks === project.tracks && top.markers === project.markers;
     let changed = false;
 
     if (!continuation && !unchanged) {
-      history.undo.push({ clips: project.clips, tracks: project.tracks });
+      history.undo.push({ clips: project.clips, tracks: project.tracks, markers: project.markers });
       if (history.undo.length > HISTORY_MAX_ENTRIES) {
         history.undo.splice(0, history.undo.length - HISTORY_MAX_ENTRIES);
       }
@@ -349,10 +366,22 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
 
   const applySnapshot = useCallback((projectId: string, snapshot: HistorySnapshot) => {
     setProjects(prev => prev.map(p =>
-      p.id === projectId ? { ...p, clips: snapshot.clips, tracks: snapshot.tracks } : p
+      p.id === projectId ? { ...p, clips: snapshot.clips, tracks: snapshot.tracks, markers: snapshot.markers } : p
     ));
-    setSelectedClipId(sel => sel !== null && snapshot.clips.some(c => c.id === sel) ? sel : null);
   }, []);
+
+  // Abandon d'un geste (ex. dépôt refusé) : on dépile le snapshot empilé par ce
+  // geste et on le ré-applique, sans laisser d'entrée fantôme dans l'historique.
+  const cancelHistoryGesture = useCallback(() => {
+    const g = gestureRef.current;
+    if (g.active && g.pushed) {
+      const history = historyRef.current.get(currentProjectIdRef.current);
+      const snap = history?.undo.pop();
+      if (snap) applySnapshot(currentProjectIdRef.current, snap);
+      setHistoryVersion(v => v + 1);
+    }
+    endHistoryGesture();
+  }, [applySnapshot, endHistoryGesture]);
 
   const undo = useCallback(() => {
     const history = historyRef.current.get(currentProjectId);
@@ -360,7 +389,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     if (!history || !project) return;
     const snapshot = history.undo.pop();
     if (!snapshot) return;
-    history.redo.push({ clips: project.clips, tracks: project.tracks });
+    history.redo.push({ clips: project.clips, tracks: project.tracks, markers: project.markers });
     lastPushAtRef.current = 0;
     gestureRef.current.pushed = false;
     setHistoryVersion(v => v + 1);
@@ -373,12 +402,22 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     if (!history || !project) return;
     const snapshot = history.redo.pop();
     if (!snapshot) return;
-    history.undo.push({ clips: project.clips, tracks: project.tracks });
+    history.undo.push({ clips: project.clips, tracks: project.tracks, markers: project.markers });
     lastPushAtRef.current = 0;
     gestureRef.current.pushed = false;
     setHistoryVersion(v => v + 1);
     applySnapshot(currentProjectId, snapshot);
   }, [currentProjectId, applySnapshot]);
+
+  // « Annuler » d'un toast : n'annule que si l'entrée empilée par l'action est
+  // toujours au sommet (même projet, rien fait depuis), sinon ne fait rien.
+  const undoIfTop = useCallback((token: HistoryToken): boolean => {
+    if (token.projectId !== currentProjectIdRef.current) return false;
+    const history = historyRef.current.get(token.projectId);
+    if (!history || history.undo[history.undo.length - 1] !== token.snapshot) return false;
+    undo();
+    return true;
+  }, [undo]);
 
   // Raccourcis globaux : Ctrl/Cmd+Z, Ctrl/Cmd+Shift+Z, Ctrl/Cmd+Y
   useEffect(() => {
@@ -403,11 +442,25 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     setProjects(prev => prev.map(p => p.id === currentProjectId ? updater(p) : p));
   }, [currentProjectId]);
 
-  // Variante enregistrée dans l'historique undo/redo (clips et pistes uniquement)
-  const updateCurrentProjectWithHistory = useCallback((updater: (p: Project) => Project, discrete = false) => {
+  // Variante enregistrée dans l'historique undo/redo (clips, pistes et marqueurs).
+  // Règle : toute mutation d'un champ du snapshot passe par ici ; currentView
+  // et projectSettings restent hors historique. Pour une action discrète, le
+  // jeton rendu désigne le sommet de la pile = l'état d'avant l'action (même si
+  // `unchanged` a évité un push : le sommet est alors déjà cet état).
+  const updateCurrentProjectWithHistory = useCallback((updater: (p: Project) => Project, discrete = false): HistoryToken | null => {
     recordHistory(currentProjectId, discrete);
     updateCurrentProject(updater);
+    if (!discrete) return null;
+    const history = historyRef.current.get(currentProjectId);
+    const top = history?.undo[history.undo.length - 1];
+    return top ? { projectId: currentProjectId, snapshot: top } : null;
   }, [currentProjectId, recordHistory, updateCurrentProject]);
+
+  // Dernier état commité du projet courant (lecture synchrone, sans rendu)
+  const getCurrent = useCallback((): Project | undefined =>
+    projectsRef.current.find(p => p.id === currentProjectIdRef.current), []);
+  const getClips = useCallback((): Clip[] => getCurrent()?.clips ?? [], [getCurrent]);
+  const getTracks = useCallback((): Track[] => getCurrent()?.tracks ?? [], [getCurrent]);
 
   const setClips = useCallback<Dispatch<SetStateAction<Clip[]>>>((action) => {
     updateCurrentProjectWithHistory(p => ({
@@ -423,26 +476,245 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     }));
   }, [updateCurrentProject]);
 
-  const deleteClip = useCallback((id: string) => {
-    const project = projectsRef.current.find(p => p.id === currentProjectId);
-    if (!project?.clips.some(c => c.id === id)) return;
-    updateCurrentProjectWithHistory(p => ({ ...p, clips: p.clips.filter(c => c.id !== id) }), true);
-    setSelectedClipId(prev => prev === id ? null : prev);
-  }, [currentProjectId, updateCurrentProjectWithHistory]);
+  // --- SÉLECTION ---
+  const selectClips = useCallback((ids: string[], primary?: string) => {
+    setSelection({ ids: [...ids], primary: primary ?? ids[ids.length - 1] ?? null });
+  }, []);
 
-  const duplicateClip = useCallback((id: string) => {
-    const project = projectsRef.current.find(p => p.id === currentProjectId);
-    const original = project?.clips.find(c => c.id === id);
-    if (!original) return;
-    const copy: Clip = {
-      ...original,
-      id: `${id}_copy_${Date.now()}`,
-      start: original.start + original.width,
+  const clearSelection = useCallback(() => {
+    setSelection(prev => prev.ids.length === 0 && prev.primary === null ? prev : { ids: [], primary: null });
+  }, []);
+
+  const selectClip = useCallback((id: string, mode: SelectMode = 'replace') => {
+    const project = getCurrent();
+    if (!project) return;
+    const clip = project.clips.find(c => c.id === id);
+    if (clip && project.tracks.find(t => t.id === clip.track)?.locked) return;
+    // 'replace' accepte un clip pas encore commité (setClips puis sélection
+    // dans le même tick) : la dérivation l'affichera dès qu'il existera.
+    if (mode === 'replace') {
+      setSelection({ ids: [id], primary: id });
+      return;
+    }
+    if (!clip) return;
+    setSelection(prev => {
+      const existing = new Set(project.clips.map(c => c.id));
+      const ids = prev.ids.filter(i => existing.has(i));
+      if (mode === 'toggle' && ids.includes(id)) {
+        const rest = ids.filter(i => i !== id);
+        return { ids: rest, primary: rest[rest.length - 1] ?? null };
+      }
+      if (mode === 'range') {
+        const primaryId = prev.primary && ids.includes(prev.primary) ? prev.primary : ids[ids.length - 1];
+        const primary = primaryId ? project.clips.find(c => c.id === primaryId) : undefined;
+        if (primary && primary.track === clip.track) {
+          const lo = Math.min(primary.start, clip.start);
+          const hi = Math.max(primary.start, clip.start);
+          const inRange = project.clips
+            .filter(c => c.track === clip.track && c.start >= lo && c.start <= hi)
+            .map(c => c.id);
+          const merged = [...ids, ...inRange.filter(i => !ids.includes(i))];
+          return { ids: merged, primary: primaryId ?? null };
+        }
+      }
+      // 'add', 'toggle' (absent) et 'range' sans primaire compatible
+      return { ids: ids.includes(id) ? ids : [...ids, id], primary: id };
+    });
+  }, [getCurrent]);
+
+  // Compat : ancienne API à valeur unique
+  const setSelectedClipId = useCallback((id: string | null) => {
+    if (id) selectClip(id, 'replace');
+    else clearSelection();
+  }, [selectClip, clearSelection]);
+
+  // Tous les clips non verrouillés des pistes affichées (vue courante)
+  const selectAllClips = useCallback(() => {
+    const project = getCurrent();
+    if (!project) return;
+    const allowed = new Set(project.tracks
+      .filter(t => !t.locked && (project.currentView === 'video' || t.type === 'audio'))
+      .map(t => t.id));
+    selectClips(project.clips.filter(c => allowed.has(c.track)).map(c => c.id));
+  }, [getCurrent, selectClips]);
+
+  // --- PISTES ---
+  // L'id est calculé avant l'updater (StrictMode l'appelle deux fois) ; le
+  // garde `some` rend l'updater idempotent.
+  const addTrack = useCallback((type: 'video' | 'audio'): number => {
+    const id = nextTrackId(getCurrent()?.tracks ?? []);
+    updateCurrentProjectWithHistory(p => p.tracks.some(t => t.id === id) ? p : ({
+      ...p,
+      tracks: [...p.tracks, { id, type, name: trackName(type, p.tracks) }],
+    }), true);
+    return id;
+  }, [getCurrent, updateCurrentProjectWithHistory]);
+
+  /**
+   * Renvoie l'id de la première piste du type demandé (non verrouillée si
+   * `unlocked`), en la créant si le projet n'en possède aucune.
+   */
+  const ensureTrack = useCallback((type: 'video' | 'audio', opts?: { unlocked?: boolean }): number => {
+    const existing = getCurrent()?.tracks.find(t => t.type === type && !(opts?.unlocked && t.locked));
+    if (existing) return existing.id;
+    return addTrack(type);
+  }, [getCurrent, addTrack]);
+
+  // `hidden` n'a pas de sens sur la piste texte : ignoré
+  const updateTrack = useCallback((id: number, patch: Partial<Pick<Track, 'name' | 'muted' | 'hidden' | 'locked'>>) => {
+    updateCurrentProjectWithHistory(p => ({
+      ...p,
+      tracks: p.tracks.map(t => {
+        if (t.id !== id) return t;
+        const next = { ...t, ...patch };
+        if (t.type === 'text') delete next.hidden;
+        return next;
+      }),
+    }), true);
+  }, [updateCurrentProjectWithHistory]);
+
+  // Refuse la piste texte ; retire la piste ET ses clips en une seule entrée
+  const deleteTrack = useCallback((id: number): HistoryToken | null => {
+    const track = getCurrent()?.tracks.find(t => t.id === id);
+    if (!track || track.type === 'text') return null;
+    return updateCurrentProjectWithHistory(p => ({
+      ...p,
+      tracks: p.tracks.filter(t => t.id !== id),
+      clips: p.clips.filter(c => c.track !== id),
+    }), true);
+  }, [getCurrent, updateCurrentProjectWithHistory]);
+
+  // --- CLIPS ---
+  // Dépôt d'un média : piste (existante non verrouillée, sinon créée) et clip
+  // dans le même updater = une seule entrée d'historique. `start` = première
+  // place libre à partir de la position demandée.
+  const insertClip = useCallback((clip: Omit<Clip, 'track'>, trackType: 'video' | 'audio'): { id: string; track: number } => {
+    const tracks = getCurrent()?.tracks ?? [];
+    const existing = tracks.find(t => t.type === trackType && !t.locked);
+    const trackId = existing ? existing.id : nextTrackId(tracks);
+    updateCurrentProjectWithHistory(p => {
+      const nextTracks = p.tracks.some(t => t.id === trackId)
+        ? p.tracks
+        : [...p.tracks, { id: trackId, type: trackType, name: trackName(trackType, p.tracks) }];
+      const candidate: Clip = { ...clip, track: trackId, start: Math.max(0, clip.start) };
+      candidate.start = findFreeStart(p.clips, candidate);
+      return { ...p, tracks: nextTracks, clips: [...p.clips, candidate] };
+    }, true);
+    setSelection({ ids: [clip.id], primary: clip.id });
+    return { id: clip.id, track: trackId };
+  }, [getCurrent, updateCurrentProjectWithHistory]);
+
+  const deleteClips = useCallback((ids: string[]): HistoryToken | null => {
+    const set = new Set(ids);
+    if (!getCurrent()?.clips.some(c => set.has(c.id))) return null;
+    return updateCurrentProjectWithHistory(p => ({ ...p, clips: p.clips.filter(c => !set.has(c.id)) }), true);
+  }, [getCurrent, updateCurrentProjectWithHistory]);
+
+  const deleteClip = useCallback((id: string) => deleteClips([id]), [deleteClips]);
+
+  const rippleDeleteClips = useCallback((ids: string[]): HistoryToken | null => {
+    const set = new Set(ids);
+    if (!getCurrent()?.clips.some(c => set.has(c.id))) return null;
+    return updateCurrentProjectWithHistory(p => ({ ...p, clips: computeRipple(p.clips, ids) }), true);
+  }, [getCurrent, updateCurrentProjectWithHistory]);
+
+  // Copies décalées de la largeur du groupe (maxEnd − minStart), puis poussées
+  // jusqu'à la première place libre ; les copies deviennent la sélection.
+  const duplicateClips = useCallback((ids: string[]): string[] => {
+    const set = new Set(ids);
+    const originals = (getCurrent()?.clips ?? []).filter(c => set.has(c.id));
+    if (originals.length === 0) return [];
+    const copyIds = new Map(originals.map(o => [o.id, newId('clip')]));
+    updateCurrentProjectWithHistory(p => {
+      const sources = p.clips.filter(c => copyIds.has(c.id));
+      if (sources.length === 0) return p;
+      const minStart = Math.min(...sources.map(c => c.start));
+      const maxEnd = Math.max(...sources.map(clipEnd));
+      const copies = sources.map(o => {
+        const copy: Clip = { ...o, id: copyIds.get(o.id)!, start: o.start + (maxEnd - minStart) };
+        if (o.transform) copy.transform = { ...o.transform };
+        return copy;
+      });
+      const delta = findFreeGroupDelta(p.clips, copies);
+      return { ...p, clips: [...p.clips, ...copies.map(c => ({ ...c, start: c.start + delta }))] };
+    }, true);
+    const newIds = originals.map(o => copyIds.get(o.id)!);
+    setSelection({ ids: newIds, primary: newIds[newIds.length - 1] });
+    return newIds;
+  }, [getCurrent, updateCurrentProjectWithHistory]);
+
+  const duplicateClip = useCallback((id: string) => duplicateClips([id]), [duplicateClips]);
+
+  // Coupe les clips traversés par `timePx` (non verrouillés) en une seule
+  // mutation ; renvoie les ids des moitiés droites. Les ids sont générés avant
+  // l'updater pour rester stables si React l'appelle deux fois.
+  const splitClipsAt = useCallback((ids: string[], timePx: number): string[] => {
+    const project = getCurrent();
+    if (!project) return [];
+    const set = new Set(ids);
+    const locked = new Set(project.tracks.filter(t => t.locked).map(t => t.id));
+    const plan = new Map<string, [string, string]>();
+    for (const c of project.clips) {
+      if (!set.has(c.id) || locked.has(c.track)) continue;
+      if (!splitClip(c, timePx, ['a', 'b'])) continue;
+      plan.set(c.id, [newId('clip'), newId('clip')]);
+    }
+    if (plan.size === 0) return [];
+    updateCurrentProjectWithHistory(p => ({
+      ...p,
+      clips: p.clips.flatMap(c => {
+        const pair = plan.get(c.id);
+        return pair ? (splitClip(c, timePx, pair) ?? [c]) : [c];
+      }),
+    }), true);
+    return [...plan.values()].map(([, right]) => right);
+  }, [getCurrent, updateCurrentProjectWithHistory]);
+
+  // Volume/muet : discret par défaut ; `discrete = false` pour un slider
+  // (encadré par begin/endHistoryGesture)
+  const updateClips = useCallback((ids: string[], patch: Partial<Pick<Clip, 'volume' | 'muted'>>, discrete = true) => {
+    const set = new Set(ids);
+    updateCurrentProjectWithHistory(p => ({
+      ...p,
+      clips: p.clips.map(c => set.has(c.id) ? { ...c, ...patch } : c),
+    }), discrete);
+  }, [updateCurrentProjectWithHistory]);
+
+  // Collage groupé à `atPx` : écarts conservés, piste d'origine si elle existe
+  // et n'est pas verrouillée (sinon première piste libre du type, créée au
+  // besoin dans le même updater), puis décalage jusqu'à une place libre.
+  const pasteClips = useCallback((source: Clip[], atPx: number): string[] => {
+    const project = getCurrent();
+    if (!project || source.length === 0) return [];
+    const minStart = Math.min(...source.map(c => c.start));
+    const textTrack = project.tracks.find(t => t.type === 'text')?.id ?? TEXT_TRACK_ID;
+    // Pistes cibles décidées avant l'updater (ids des pistes à créer inclus)
+    const created: Track[] = [];
+    const targetTrack = (c: Clip): number => {
+      if (c.type === 'text') return textTrack;
+      const own = project.tracks.find(t => t.id === c.track);
+      if (own && own.type !== 'text' && !own.locked) return own.id;
+      const type = c.type === 'audio' ? 'audio' : 'video';
+      const free = project.tracks.find(t => t.type === type && !t.locked) ?? created.find(t => t.type === type);
+      if (free) return free.id;
+      const t: Track = { id: nextTrackId([...project.tracks, ...created]), type, name: trackName(type, [...project.tracks, ...created]) };
+      created.push(t);
+      return t.id;
     };
-    if (original.transform) copy.transform = { ...original.transform };
-    updateCurrentProjectWithHistory(p => ({ ...p, clips: [...p.clips, copy] }), true);
-    setSelectedClipId(copy.id);
-  }, [currentProjectId, updateCurrentProjectWithHistory]);
+    const pasted = source.map(c => {
+      const copy: Clip = { ...c, id: newId('clip'), track: targetTrack(c), start: Math.max(0, atPx) + (c.start - minStart) };
+      if (c.transform) copy.transform = { ...c.transform };
+      return copy;
+    });
+    updateCurrentProjectWithHistory(p => {
+      const tracks = [...p.tracks, ...created.filter(t => !p.tracks.some(x => x.id === t.id))];
+      const delta = findFreeGroupDelta(p.clips, pasted);
+      return { ...p, tracks, clips: [...p.clips, ...pasted.map(c => ({ ...c, start: c.start + delta }))] };
+    }, true);
+    const ids = pasted.map(c => c.id);
+    setSelection({ ids, primary: ids[ids.length - 1] });
+    return ids;
+  }, [getCurrent, updateCurrentProjectWithHistory]);
 
   const setAssets = useCallback<Dispatch<SetStateAction<Asset[]>>>((action) => {
     updateCurrentProject(p => ({
@@ -451,45 +723,34 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     }));
   }, [updateCurrentProject]);
 
-  const addTrack = useCallback((type: 'video' | 'audio') => {
+  // --- MARQUEURS (discrets) ---
+  const addMarker = useCallback((timePx: number): string => {
+    const id = newId('marker');
     updateCurrentProjectWithHistory(p => {
-      const maxId = Math.max(...p.tracks.map(t => t.id), 0);
-      const count = p.tracks.filter(t => t.type === type).length + 1;
-      return {
-        ...p,
-        tracks: [...p.tracks, {
-          id: maxId + 1,
-          type,
-          name: `${type === 'video' ? 'Video' : 'Audio'} ${count}`
-        }]
-      };
+      if (p.markers.some(m => m.id === id)) return p;
+      const used = new Set(p.markers.map(m => m.label));
+      let n = 1;
+      while (used.has(`M${n}`)) n += 1;
+      return { ...p, markers: [...p.markers, { id, time: Math.max(0, timePx), label: `M${n}` }] };
     }, true);
+    return id;
   }, [updateCurrentProjectWithHistory]);
 
-  /**
-   * Renvoie l'id d'une piste du type demandé, en la créant si le projet n'en
-   * possède aucune (projets anciens ou importés sans piste vidéo/audio).
-   */
-  const ensureTrack = useCallback((type: 'video' | 'audio'): number => {
-    const project = projectsRef.current.find(p => p.id === currentProjectId);
-    const existing = project?.tracks.find(t => t.type === type);
-    if (existing) return existing.id;
-
-    const newId = Math.max(...(project?.tracks.map(t => t.id) ?? []), 0) + 1;
+  const deleteMarker = useCallback((id: string) => {
+    if (!getCurrent()?.markers.some(m => m.id === id)) return;
     updateCurrentProjectWithHistory(p => {
-      if (p.tracks.some(t => t.type === type)) return p;
-      const count = p.tracks.filter(t => t.type === type).length + 1;
-      return {
-        ...p,
-        tracks: [...p.tracks, {
-          id: newId,
-          type,
-          name: `${type === 'video' ? 'Video' : 'Audio'} ${count}`
-        }]
-      };
+      const markers = p.markers.filter(m => m.id !== id);
+      return { ...p, markers: markers.length === 0 ? EMPTY_MARKERS : markers };
     }, true);
-    return newId;
-  }, [currentProjectId, updateCurrentProjectWithHistory]);
+  }, [getCurrent, updateCurrentProjectWithHistory]);
+
+  const updateMarker = useCallback((id: string, patch: Partial<Pick<Marker, 'time' | 'label'>>) => {
+    if (!getCurrent()?.markers.some(m => m.id === id)) return;
+    updateCurrentProjectWithHistory(p => ({
+      ...p,
+      markers: p.markers.map(m => m.id === id ? { ...m, ...patch } : m),
+    }), true);
+  }, [getCurrent, updateCurrentProjectWithHistory]);
 
   const setCurrentView = useCallback((view: ViewMode) => {
     updateCurrentProject(p => ({ ...p, currentView: view }));
@@ -498,6 +759,21 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
   const setProjectSettings = useCallback((settings: ProjectSettings) => {
     updateCurrentProject(p => ({ ...p, projectSettings: settings }));
   }, [updateCurrentProject]);
+
+  // --- PRÉFÉRENCE AIMANT (lue au montage, jamais dans l'initialiseur : SSR) ---
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(SNAP_STORAGE_KEY);
+      if (raw === '0') setSnapEnabledState(false);
+    } catch {
+      // localStorage indisponible : valeur par défaut
+    }
+  }, []);
+
+  const setSnapEnabled = useCallback((v: boolean) => {
+    setSnapEnabledState(v);
+    try { localStorage.setItem(SNAP_STORAGE_KEY, v ? '1' : '0'); } catch {}
+  }, []);
 
   // --- GESTION MULTI-PROJETS ---
   const createProject = useCallback((name?: string) => {
@@ -519,7 +795,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
       return [...prev, buildEmptyProject(id, projectName)];
     });
     setCurrentProjectId(id);
-    setSelectedClipId(null);
+    setSelection({ ids: [], primary: null });
     currentTimeRef.current = 0;
     setCurrentTime(0);
     setIsPlaying(false);
@@ -530,7 +806,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
 
   const selectProject = useCallback((id: string) => {
     setCurrentProjectId(id);
-    setSelectedClipId(null);
+    setSelection({ ids: [], primary: null });
     currentTimeRef.current = 0;
     setCurrentTime(0);
     setIsPlaying(false);
@@ -559,7 +835,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     if (id === currentProjectId) {
       const remaining = projectsRef.current.filter(p => p.id !== id);
       setCurrentProjectId(remaining[0]?.id ?? fallbackId);
-      setSelectedClipId(null);
+      setSelection({ ids: [], primary: null });
       currentTimeRef.current = 0;
       setCurrentTime(0);
       setIsPlaying(false);
@@ -594,7 +870,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
           if (user) {
             const userId = user.id;
             setUserEmail(user.email);
-            const fetched = (await fetchAllProjects(supabase, userId)).map(ensureTextTrack);
+            const fetched = (await fetchAllProjects(supabase, userId)).map(normalizeProject);
             if (cancelled) return;
             if (fetched.length > 0) {
               setProjects(fetched);
@@ -639,7 +915,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
         if (raw) {
           const parsed = JSON.parse(raw) as { projects?: Project[]; currentProjectId?: string };
           if (parsed.projects && Array.isArray(parsed.projects) && parsed.projects.length > 0) {
-            const migrated = parsed.projects.map(ensureTextTrack);
+            const migrated = parsed.projects.map(normalizeProject);
             if (!cancelled) {
               const restoredId = parsed.currentProjectId ?? migrated[0].id;
               setProjects(migrated);
@@ -801,6 +1077,22 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     [currentProject.clips]
   );
 
+  // --- SÉLECTION DÉRIVÉE ---
+  // Invariants par construction : ids existants, jamais sur une piste
+  // verrouillée ; le primaire retiré promeut le dernier id restant.
+  const selectedClipIds = useMemo(() => {
+    const locked = new Set(currentProject.tracks.filter(t => t.locked).map(t => t.id));
+    const byId = new Map(currentProject.clips.map(c => [c.id, c]));
+    return selection.ids.filter(id => {
+      const c = byId.get(id);
+      return !!c && !locked.has(c.track);
+    });
+  }, [selection.ids, currentProject.clips, currentProject.tracks]);
+  const selectedClipIdSet = useMemo(() => new Set(selectedClipIds), [selectedClipIds]);
+  const selectedClipId = selection.primary !== null && selectedClipIdSet.has(selection.primary)
+    ? selection.primary
+    : (selectedClipIds[selectedClipIds.length - 1] ?? null);
+
   // Seuil d'arrêt automatique de la lecture ; null = aucun clip, on ne stoppe jamais
   const autoStopAtRef = useRef<number | null>(null);
   useEffect(() => {
@@ -898,18 +1190,23 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
       createProject, selectProject, renameProject, deleteProject,
       isHydrated, isPersistenceCloud, persistenceMode, persistenceError, uploadAssetFile,
       saveStatus, lastSavedAt, userEmail,
-      undo, redo, canUndo, canRedo, beginHistoryGesture, endHistoryGesture,
+      undo, redo, canUndo, canRedo, beginHistoryGesture, endHistoryGesture, cancelHistoryGesture, undoIfTop,
       isPlaying, togglePlay, currentTime, setCurrentTime,
       currentTimeRef, subscribeToTime,
-      clips: currentProject.clips, setClips, setClipsWithoutHistory, deleteClip, duplicateClip, projectDurationPx,
-      tracks: currentProject.tracks, addTrack, ensureTrack,
+      clips: currentProject.clips, setClips, setClipsWithoutHistory, getClips, getTracks,
+      insertClip, deleteClips, deleteClip, duplicateClips, duplicateClip, rippleDeleteClips, splitClipsAt, updateClips, pasteClips,
+      projectDurationPx,
+      tracks: currentProject.tracks, addTrack, ensureTrack, updateTrack, deleteTrack,
       textTrackId: (currentProject.tracks.find(t => t.type === 'text')?.id ?? TEXT_TRACK_ID),
       assets: currentProject.assets, setAssets,
+      markers: currentProject.markers, addMarker, deleteMarker, updateMarker,
       previewAsset, setPreviewAsset, scale: PX_PER_SEC_BASE * zoomLevel,
       projectSettings: currentProject.projectSettings, setProjectSettings,
       currentView: currentProject.currentView, setCurrentView,
       activeTool, setActiveTool,
-      zoomLevel, setZoomLevel, selectedClipId, setSelectedClipId
+      zoomLevel, setZoomLevel, snapEnabled, setSnapEnabled,
+      selectedClipIds, selectedClipIdSet, selectedClipId,
+      selectClip, selectClips, clearSelection, setSelectedClipId, selectAllClips,
     }}>
       {children}
     </ProjectContext.Provider>

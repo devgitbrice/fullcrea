@@ -2,6 +2,14 @@
 -- FULLCREA — Schéma Supabase
 -- À exécuter dans : Supabase Dashboard → SQL Editor → Run
 -- Idempotent : peut être ré-exécuté sans casse.
+--
+-- CHECKLIST DE DÉPLOIEMENT
+--   [ ] Ré-exécuter ce fichier ENTIER après chaque mise à jour de l'app :
+--       la section 5 bis (migrations) ajoute les colonnes récentes
+--       (offset_px, source_duration_px, volume, muted, hidden, locked, markers).
+--       Sans elles, l'insert échoue « column … does not exist » et l'indicateur
+--       de sauvegarde passe en erreur.
+--   [ ] Vérifier que le bucket 'fullcrea-assets' est Public (section 7).
 -- =====================================================
 
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
@@ -124,6 +132,23 @@ CREATE INDEX IF NOT EXISTS idx_fullcrea_clips_project
     ON fullcrea_clips(project_id);
 CREATE INDEX IF NOT EXISTS idx_fullcrea_clips_project_track
     ON fullcrea_clips(project_id, track_index);
+
+
+-- =====================================================
+-- 5 bis. MIGRATIONS (colonnes ajoutées après la création des tables)
+--    Idempotent : ADD COLUMN IF NOT EXISTS.
+-- =====================================================
+ALTER TABLE fullcrea_clips
+  ADD COLUMN IF NOT EXISTS offset_px          DOUBLE PRECISION NOT NULL DEFAULT 0 CHECK (offset_px >= 0),
+  ADD COLUMN IF NOT EXISTS source_duration_px DOUBLE PRECISION,
+  ADD COLUMN IF NOT EXISTS volume             DOUBLE PRECISION CHECK (volume IS NULL OR (volume >= 0 AND volume <= 1)),
+  ADD COLUMN IF NOT EXISTS muted              BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE fullcrea_tracks
+  ADD COLUMN IF NOT EXISTS muted  BOOLEAN NOT NULL DEFAULT false,
+  ADD COLUMN IF NOT EXISTS hidden BOOLEAN NOT NULL DEFAULT false,
+  ADD COLUMN IF NOT EXISTS locked BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE fullcrea_projects
+  ADD COLUMN IF NOT EXISTS markers JSONB NOT NULL DEFAULT '[]'::jsonb;
 
 
 -- =====================================================

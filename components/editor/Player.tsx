@@ -6,27 +6,15 @@ import {
   PointerEvent as ReactPointerEvent, KeyboardEvent as ReactKeyboardEvent,
 } from 'react';
 import { Play, Pause, SkipBack, SkipForward, StepBack, StepForward, Repeat, Music, AlertCircle } from 'lucide-react';
-import { useProject, Clip, defaultImageTransform } from '@/components/ProjectContext';
+import { useProject, Clip, defaultImageTransform, PX_PER_SEC_BASE } from '@/components/ProjectContext';
+import { findActiveVisual, findActiveAudio, mediaTimeSec } from '@/lib/timeline/clipOps';
+import { formatTimecode } from '@/lib/timeline/format';
 
 // Clips et currentTime sont exprimés en px à zoom 1 (30 px = 1 s), indépendamment du zoom.
-const PX_PER_SEC = 30;
+const PX_PER_SEC = PX_PER_SEC_BASE;
 const DEFAULT_FPS = 30;
 // Absorbe le bruit flottant (31 / 30 * 30 = 30.999…) pour ne pas afficher l'image précédente
 const EPSILON = 1e-6;
-
-const pad2 = (n: number) => String(n).padStart(2, '0');
-
-function formatTimecode(px: number, fps: number): string {
-  const safeFps = Number.isFinite(fps) && fps > 0 ? fps : DEFAULT_FPS;
-  const seconds = (Number.isFinite(px) ? Math.max(0, px) : 0) / PX_PER_SEC;
-  const totalFrames = Math.floor(seconds * safeFps + EPSILON);
-  const totalSeconds = Math.floor(totalFrames / safeFps);
-  const frames = Math.floor(totalFrames - totalSeconds * safeFps);
-  const h = Math.floor(totalSeconds / 3600);
-  const m = Math.floor((totalSeconds % 3600) / 60);
-  const s = totalSeconds % 60;
-  return `${pad2(h)}:${pad2(m)}:${pad2(s)}:${pad2(frames)}`;
-}
 
 const transportButtonClass =
   'p-1 rounded text-gray-400 hover:text-white transition active:scale-90 ' +
@@ -34,7 +22,7 @@ const transportButtonClass =
 
 export default function Player() {
   const {
-    isPlaying, togglePlay, currentTime, clips, setCurrentTime, currentView,
+    isPlaying, togglePlay, currentTime, clips, tracks, setCurrentTime, currentView,
     subscribeToTime, currentTimeRef, projectSettings, projectDurationPx,
   } = useProject();
 
@@ -45,18 +33,19 @@ export default function Player() {
   const lastVideoClipRef = useRef<Clip | null>(null);
   const lastAudioClipRef = useRef<Clip | null>(null);
 
-  // ✅ Mémoriser les clips actifs (pour l'affichage UI uniquement)
-  const activeVideoClip = useMemo(() => {
-    return clips.find(
-      (c) => (c.type === 'video' || c.type === 'image') && currentTime >= c.start && currentTime < c.start + c.width
-    ) || null;
-  }, [clips, currentTime]);
+  // Clips actifs pour l'affichage : même règle que l'export (piste du dessus,
+  // pistes masquées/muettes ignorées). Limite conservée : un seul <video> et un
+  // seul <audio> à la fois — deux clips audio superposés, seul le gagnant est
+  // entendu ; l'export, lui, mixe tout.
+  const activeVideoClip = useMemo(
+    () => findActiveVisual(clips, tracks, currentTime),
+    [clips, tracks, currentTime]
+  );
 
-  const activeAudioClip = useMemo(() => {
-    return clips.find(
-      (c) => c.type === 'audio' && currentTime >= c.start && currentTime < c.start + c.width
-    ) || null;
-  }, [clips, currentTime]);
+  const activeAudioClip = useMemo(
+    () => findActiveAudio(clips, tracks, currentTime),
+    [clips, tracks, currentTime]
+  );
 
   // ✅ Mémoriser les clips texte actifs
   const activeTextClips = useMemo(() => {
@@ -66,13 +55,6 @@ export default function Player() {
   }, [clips, currentTime]);
 
   const isVideoMode = currentView === 'video';
-
-  // ✅ Fonction de recherche de clip optimisée (inline, pas de state)
-  const findClipAtTime = useCallback((time: number, track: 1 | 2): Clip | null => {
-    return clips.find(
-      (c) => c.track === track && time >= c.start && time < c.start + c.width
-    ) || null;
-  }, [clips]);
 
   // --- MOTEUR DE SYNCHRONISATION VIDÉO/AUDIO OPTIMISÉ ---
   // ✅ Ref pour suivre le dernier temps de sync (évite les resyncs trop fréquents)
@@ -88,9 +70,9 @@ export default function Player() {
       const shouldSync = now - lastSyncTimeRef.current > SYNC_INTERVAL;
 
       // Synchronisation VIDÉO
-      const videoClip = findClipAtTime(time, 1);
+      const videoClip = findActiveVisual(clips, tracks, time);
       if (videoClip && videoRef.current) {
-        const targetTime = (time - videoClip.start) / PX_PER_SEC;
+        const targetTime = mediaTimeSec(videoClip, time);
         const diff = Math.abs(videoRef.current.currentTime - targetTime);
 
         if (isPlaying) {
@@ -111,9 +93,9 @@ export default function Player() {
       }
 
       // Synchronisation AUDIO
-      const audioClip = findClipAtTime(time, 2);
+      const audioClip = findActiveAudio(clips, tracks, time);
       if (audioClip && audioClip.src && audioRef.current) {
-        const targetTime = (time - audioClip.start) / PX_PER_SEC;
+        const targetTime = mediaTimeSec(audioClip, time);
         const diff = Math.abs(audioRef.current.currentTime - targetTime);
 
         if (isPlaying) {
@@ -133,7 +115,24 @@ export default function Player() {
     });
 
     return unsubscribe;
-  }, [subscribeToTime, findClipAtTime, isPlaying]);
+  }, [subscribeToTime, clips, tracks, isPlaying]);
+
+  // Volume et muet des éléments média : hors du subscriber 60 Hz, seulement
+  // quand le clip actif ou son réglage change. Piste vidéo muette = vidéo muette.
+  const videoTrackMuted = !!tracks.find(t => t.id === activeVideoClip?.track)?.muted;
+  const audioTrackMuted = !!tracks.find(t => t.id === activeAudioClip?.track)?.muted;
+  useEffect(() => {
+    const el = videoRef.current;
+    if (!el || !activeVideoClip) return;
+    el.volume = Math.min(1, Math.max(0, activeVideoClip.volume ?? 1));
+    el.muted = !!activeVideoClip.muted || videoTrackMuted;
+  }, [activeVideoClip?.id, activeVideoClip?.volume, activeVideoClip?.muted, videoTrackMuted]);
+  useEffect(() => {
+    const el = audioRef.current;
+    if (!el || !activeAudioClip) return;
+    el.volume = Math.min(1, Math.max(0, activeAudioClip.volume ?? 1));
+    el.muted = !!activeAudioClip.muted || audioTrackMuted;
+  }, [activeAudioClip?.id, activeAudioClip?.volume, activeAudioClip?.muted, audioTrackMuted]);
 
   // Gérer pause/play
   useEffect(() => {
@@ -149,7 +148,7 @@ export default function Player() {
     if (isPlaying) return;
     const seek = (el: HTMLMediaElement | null, clip: Clip | null) => {
       if (!el || !clip || !clip.src) return;
-      const target = (currentTime - clip.start) / PX_PER_SEC;
+      const target = mediaTimeSec(clip, currentTime);
       if (Math.abs(el.currentTime - target) > PAUSED_SEEK_THRESHOLD) el.currentTime = target;
     };
     seek(videoRef.current, activeVideoClip?.type === 'video' ? activeVideoClip : null);
@@ -277,12 +276,11 @@ export default function Player() {
   const handleProgressKeyDown = (e: ReactKeyboardEvent<HTMLDivElement>) => {
     if (!hasDuration || e.ctrlKey || e.metaKey || e.altKey) return;
     switch (e.key) {
+      // ↑/↓ volontairement absents : réservés à la navigation par bord de clip (Timeline)
       case 'ArrowLeft':
-      case 'ArrowDown':
         step(-1, e.shiftKey ? PX_PER_SEC : frameStepPx);
         break;
       case 'ArrowRight':
-      case 'ArrowUp':
         step(1, e.shiftKey ? PX_PER_SEC : frameStepPx);
         break;
       case 'PageDown':
@@ -333,7 +331,6 @@ export default function Player() {
                         ref={videoRef}
                         src={activeVideoClip.src}
                         className="w-full h-full object-contain"
-                        muted={false}
                         playsInline
                         preload="auto"
                         style={{ willChange: 'transform' }}

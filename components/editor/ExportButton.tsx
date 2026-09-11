@@ -29,7 +29,7 @@ function formatSeconds(seconds: number): string {
 }
 
 export default function ExportButton() {
-  const { clips, currentProject, projectSettings, projectDurationPx } = useProject();
+  const { clips, tracks, currentProject, projectSettings, projectDurationPx } = useProject();
   const { toast } = useToast();
   const [open, setOpen] = useState(false);
   const [resolution, setResolution] = useState<ResolutionId>('hd');
@@ -73,6 +73,7 @@ export default function ExportButton() {
     try {
       const blob = await renderProjectToMp4({
         clips,
+        tracks,
         pixelsPerSecond: PIXELS_PER_SECOND,
         width: r.width,
         height: r.height,

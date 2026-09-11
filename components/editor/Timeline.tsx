@@ -3,7 +3,9 @@
 import { shouldIgnoreShortcut } from '@/lib/keyboard';
 import { useRef, DragEvent, useState, useEffect, PointerEvent as ReactPointerEvent, MouseEvent as ReactMouseEvent, useCallback, useMemo, type ReactNode } from 'react';
 import { Music, Plus, Video, AudioLines, Type, X, MousePointerClick } from 'lucide-react';
-import { useProject, Clip } from '@/components/ProjectContext';
+import { useProject, Clip, PX_PER_SEC_BASE, MIN_CLIP_WIDTH_PX } from '@/components/ProjectContext';
+import { newId, neighborBounds, isClipLocked } from '@/lib/timeline/clipOps';
+import { formatSeconds } from '@/lib/timeline/format';
 import { useToast } from '@/components/Toast';
 import TimelineToolbar from './TimelineToolbar';
 import AudioWaveform from './AudioWaveform';
@@ -14,7 +16,6 @@ import {
   type AssetDropPayload,
 } from '@/lib/assetDrag';
 
-const PX_PER_SEC_BASE = 30;
 const SNAP_THRESHOLD_PX = 10;
 const SNAP_THRESHOLD_TOUCH_PX = 14;
 const RULER_MAJOR_INTERVALS_SEC = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600];
@@ -22,13 +23,8 @@ const RULER_MAJOR_MIN_GAP_PX = 90;
 const RULER_MINOR_MIN_GAP_PX = 12;
 const CONTENT_MIN_MARGIN_PX = 400;
 const CONTENT_END_MARGIN_PX = 600;
-
-function formatSeconds(seconds: number): string {
-  const total = Math.max(0, Math.round(seconds));
-  const m = Math.floor(total / 60);
-  const s = total % 60;
-  return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
-}
+// Largeur d'un média déposé avant que sa durée réelle soit connue (probe)
+const INITIAL_CLIP_WIDTH_PX = 150;
 
 function formatPx(px: number): string {
   return formatSeconds(px / PX_PER_SEC_BASE);
@@ -68,17 +64,25 @@ function probeMediaDuration(src: string, kind: 'video' | 'audio'): Promise<numbe
 export default function Timeline() {
   const timelineRef = useRef<HTMLDivElement>(null);
   const playheadRef = useRef<HTMLDivElement>(null);
-  const clipboardRef = useRef<Clip | null>(null);
+  const clipboardRef = useRef<Clip[]>([]);
+  // Durées réelles déjà sondées, par source (px) : un média déposé deux fois
+  // n'est sondé qu'une fois.
+  const durationCacheRef = useRef<Map<string, number>>(new Map());
 
   const {
     clips,
     setClips,
-    deleteClip,
-    duplicateClip,
+    setClipsWithoutHistory,
+    getClips,
+    insertClip,
+    deleteClips,
+    duplicateClips,
+    splitClipsAt,
+    pasteClips,
     beginHistoryGesture,
     endHistoryGesture,
+    undoIfTop,
     projectDurationPx,
-    currentProjectId,
     currentTime,
     setCurrentTime,
     currentView,
@@ -87,20 +91,19 @@ export default function Timeline() {
     setActiveTool,
     zoomLevel,
     setZoomLevel,
-    selectedClipId,
+    selectedClipIds,
+    selectedClipIdSet,
+    selectClips,
+    selectAllClips,
     setSelectedClipId,
     togglePlay,
     subscribeToTime,
     currentTimeRef,
     tracks,
     addTrack,
-    ensureTrack,
     textTrackId,
   } = useProject();
   const { toast } = useToast();
-
-  const clipsRef = useRef(clips);
-  const currentProjectIdRef = useRef(currentProjectId);
 
   const [isScrubbing, setIsScrubbing] = useState(false);
   const [draggingClipId, setDraggingClipId] = useState<string | null>(null);
@@ -142,14 +145,6 @@ export default function Timeline() {
     if (activeTool !== 'cut') setCutHover(null);
   }, [activeTool]);
 
-  useEffect(() => {
-    clipsRef.current = clips;
-  }, [clips]);
-
-  useEffect(() => {
-    currentProjectIdRef.current = currentProjectId;
-  }, [currentProjectId]);
-
   // --- SNAPPING ---
   const getSnappedPosition = useCallback((pos: number, excludeId?: string, thresholdScreenPx = SNAP_THRESHOLD_PX) => {
     let bestPos = pos;
@@ -171,30 +166,25 @@ export default function Timeline() {
     return bestPos;
   }, [clips, currentTimeRef, zoomLevel]);
 
-  // --- SUPPRESSION (clavier + bouton X) ---
-  // « Annuler » restaure le clip capturé plutôt que d'appeler undo(), qui
-  // annulerait la dernière action quelle qu'elle soit (drag, trim, collage…).
-  // Le clic est ignoré si le projet a changé entre-temps ou si le clip est déjà
-  // revenu (Ctrl+Z) : un setClips redondant polluerait l'historique et viderait le redo.
-  const removeClip = useCallback((id: string) => {
-    const clip = clipsRef.current.find(c => c.id === id);
-    if (!clip) return;
-    const projectId = currentProjectId;
-    deleteClip(id);
+  // --- SUPPRESSION (clavier, bouton X, toolbar) ---
+  // « Annuler » n'appelle undo() que si la suppression est encore au sommet de
+  // l'historique (undoIfTop) : après un drag intermédiaire, le clic ne fait rien
+  // plutôt que d'annuler le drag. Les clips restaurés sont re-sélectionnés.
+  const removeClips = useCallback((ids: string[]) => {
+    const count = getClips().filter(c => ids.includes(c.id)).length;
+    const token = deleteClips(ids);
+    if (!token) return;
     toast({
-      message: 'Clip supprimé',
+      message: count > 1 ? `${count} clips supprimés` : 'Clip supprimé',
       type: 'info',
       action: {
         label: 'Annuler',
-        onClick: () => {
-          if (currentProjectIdRef.current !== projectId) return;
-          if (clipsRef.current.some(c => c.id === clip.id)) return;
-          setClips(prev => prev.some(c => c.id === clip.id) ? prev : [...prev, clip]);
-          setSelectedClipId(clip.id);
-        },
+        onClick: () => { if (undoIfTop(token)) selectClips(ids); },
       },
     });
-  }, [currentProjectId, deleteClip, setClips, setSelectedClipId, toast]);
+  }, [getClips, deleteClips, undoIfTop, selectClips, toast]);
+
+  const removeClip = useCallback((id: string) => removeClips([id]), [removeClips]);
 
   // --- CLAVIER : Suppression, Play/Pause, Dupliquer, Copier/Coller ---
   useEffect(() => {
@@ -206,30 +196,24 @@ export default function Timeline() {
         const key = e.key.toLowerCase();
         if (key === 'd') {
           e.preventDefault();
-          if (selectedClipId) duplicateClip(selectedClipId);
+          if (selectedClipIds.length > 0) duplicateClips(selectedClipIds);
           return;
         }
         if (key === 'c') {
-          const clip = selectedClipId ? clips.find(c => c.id === selectedClipId) : undefined;
-          if (clip) clipboardRef.current = { ...clip };
+          // Copie dans l'ordre des clips (les écarts sont conservés au collage)
+          const selected = clips.filter(c => selectedClipIdSet.has(c.id));
+          if (selected.length > 0) clipboardRef.current = selected.map(c => ({ ...c }));
           return;
         }
         if (key === 'v') {
-          const copied = clipboardRef.current;
-          if (!copied) return;
+          if (clipboardRef.current.length === 0) return;
           e.preventDefault();
-          const pasted: Clip = {
-            ...copied,
-            id: `${copied.id}_paste_${Date.now()}`,
-            start: Math.max(0, currentTimeRef.current),
-          };
-          if (copied.transform) pasted.transform = { ...copied.transform };
-          setClips(prev => [...prev, pasted]);
-          setSelectedClipId(pasted.id);
+          pasteClips(clipboardRef.current, Math.max(0, currentTimeRef.current));
           return;
         }
         if (key === 'a') {
           e.preventDefault();
+          selectAllClips();
           return;
         }
         return;
@@ -240,14 +224,14 @@ export default function Timeline() {
         togglePlay();
         return;
       }
-      if ((e.key === 'Delete' || e.key === 'Backspace') && selectedClipId) {
+      if ((e.key === 'Delete' || e.key === 'Backspace') && selectedClipIds.length > 0) {
         e.preventDefault();
-        removeClip(selectedClipId);
+        removeClips(selectedClipIds);
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [selectedClipId, clips, setClips, setSelectedClipId, togglePlay, duplicateClip, removeClip, currentTimeRef]);
+  }, [selectedClipIds, selectedClipIdSet, clips, togglePlay, duplicateClips, pasteClips, selectAllClips, removeClips, currentTimeRef]);
 
   // --- BLOCAGE ZOOM CHROME ---
   useEffect(() => {
@@ -265,16 +249,16 @@ export default function Timeline() {
     return () => el.removeEventListener('wheel', handleWheelNative);
   }, [setZoomLevel]);
 
-  // --- COUPE ---
+  // --- COUPE (outil cutter : clic sur un clip = coupe à l'endroit cliqué) ---
+  // Une seule entrée d'historique ; la moitié droite reprend la source au bon
+  // endroit (offset). Ignoré sur une piste verrouillée ou trop près d'un bord.
   const handleClipClick = (e: ReactMouseEvent, clip: Clip) => {
     if (activeTool !== 'cut') return;
     e.stopPropagation();
+    if (isClipLocked(clip, tracks)) return;
     const rect = e.currentTarget.getBoundingClientRect();
-    const cutPointX = (e.clientX - rect.left) / zoomLevel;
-    const clipA: Clip = { ...clip, width: cutPointX, id: `${clip.id}_p1_${Date.now()}` };
-    const clipB: Clip = { ...clip, id: `${clip.id}_p2_${Date.now()}`, start: clip.start + cutPointX, width: clip.width - cutPointX };
-    setClips(prev => [...prev.filter(c => c.id !== clip.id), clipA, clipB]);
-    setSelectedClipId(null);
+    const localX = (e.clientX - rect.left) / zoomLevel;
+    splitClipsAt([clip.id], clip.start + localX);
     setCutHover(null);
   };
 
@@ -511,46 +495,66 @@ export default function Timeline() {
     e.dataTransfer.dropEffect = "copy";
   };
 
+  // Applique une durée réelle sondée à tous les clips issus de la source qui
+  // ne la connaissent pas encore, HORS historique (Ctrl+Z après un dépôt retire
+  // le clip, pas sa largeur). Le clip fraîchement déposé (largeur initiale
+  // intacte) s'étire à sa durée, borné par le voisin de droite ; un clip déjà
+  // trimé garde sa largeur, bornée par ce qui reste de source.
+  const applyProbedDuration = useCallback((src: string, naturalPx: number, newClipId: string) => {
+    setClipsWithoutHistory(prev => {
+      let changed = false;
+      const next = prev.map(c => {
+        if (c.src !== src || c.sourceDuration != null || (c.type !== 'video' && c.type !== 'audio')) return c;
+        changed = true;
+        const untouched = c.id === newClipId && c.width === INITIAL_CLIP_WIDTH_PX && !c.offset;
+        const nb = neighborBounds(prev, c);
+        const width = untouched
+          ? Math.min(naturalPx, nb.nextStart - c.start)
+          : Math.min(c.width, naturalPx - (c.offset ?? 0));
+        return { ...c, sourceDuration: naturalPx, width: Math.max(MIN_CLIP_WIDTH_PX, width) };
+      });
+      return changed ? next : prev;
+    });
+  }, [setClipsWithoutHistory]);
+
   /** Insère un média de la bibliothèque à la position (en px timeline) donnée. */
   const insertAsset = useCallback((asset: { name: string; type: string; src: string }, atPx: number) => {
     const isVideo = asset.type.startsWith('video');
     const isAudio = asset.type.startsWith('audio');
     const clipType: Clip['type'] = isVideo ? 'video' : isAudio ? 'audio' : 'image';
-
-    // Choisir une piste valide qui correspond au type. Les projets sans piste
-    // du bon type (anciens projets, ou piste supprimée) en reçoivent une.
     const targetTrackType = isAudio ? 'audio' : 'video';
-    const targetTrackId = ensureTrack(targetTrackType);
 
     // La vue musique masque les pistes vidéo : on bascule pour que le clip
     // déposé soit visible.
     if (targetTrackType === 'video' && currentView !== 'video') setCurrentView('video');
 
-    const newId = `clip_${Date.now()}`;
-    const initialWidth = 150;
-    const newClip: Clip = {
-      id: newId,
+    // Piste (existante non verrouillée, sinon créée) + clip = une seule entrée
+    // d'historique ; le clip est poussé à la première place libre.
+    const id = newId('clip');
+    insertClip({
+      id,
       name: asset.name,
       type: clipType,
-      track: targetTrackId,
       start: Math.max(0, atPx),
-      width: initialWidth,
+      width: INITIAL_CLIP_WIDTH_PX,
       src: asset.src,
-    };
-    setClips(prev => [...prev, newClip]);
-    setSelectedClipId(newId);
+    }, targetTrackType);
 
     // Probe la durée naturelle pour étirer le clip à sa vraie durée
     if (isVideo || isAudio) {
+      const cached = durationCacheRef.current.get(asset.src);
+      if (cached != null) {
+        applyProbedDuration(asset.src, cached, id);
+        return;
+      }
       probeMediaDuration(asset.src, isVideo ? 'video' : 'audio').then(duration => {
         if (!duration) return;
-        const naturalWidth = duration * PX_PER_SEC_BASE;
-        setClips(prev => prev.map(c =>
-          c.id === newId ? { ...c, width: naturalWidth } : c
-        ));
+        const naturalPx = duration * PX_PER_SEC_BASE;
+        durationCacheRef.current.set(asset.src, naturalPx);
+        applyProbedDuration(asset.src, naturalPx, id);
       });
     }
-  }, [ensureTrack, currentView, setCurrentView, setClips, setSelectedClipId]);
+  }, [insertClip, currentView, setCurrentView, applyProbedDuration]);
 
   /** Convertit une abscisse viewport en position (px) sur la timeline. */
   const timelinePosFromClientX = useCallback((clientX: number): number | null => {
@@ -624,12 +628,17 @@ export default function Timeline() {
     `${getClipLabel(clip)} — ${formatPx(clip.start)} → ${formatPx(clip.start + clip.width)} (${formatPx(clip.width)})`;
 
   // Pistes affichées : text + video + audio en mode 'video', uniquement audio sinon.
-  // Toujours dans l'ordre : texte (haut), vidéo, audio (bas).
+  // Ordre : texte (haut), vidéo, audio (bas). Les pistes vidéo sont inversées :
+  // la dernière de `tracks` est la couche du dessus (lecteur + export), elle
+  // s'affiche donc juste sous la piste texte.
   const visibleTracks = useMemo(() => {
-    const order: Record<string, number> = { text: 0, video: 1, audio: 2 };
-    const ordered = [...tracks].sort((a, b) => (order[a.type] ?? 9) - (order[b.type] ?? 9));
-    if (currentView === 'video') return ordered;
-    return ordered.filter(t => t.type === 'audio');
+    const audio = tracks.filter(t => t.type === 'audio');
+    if (currentView !== 'video') return audio;
+    return [
+      ...tracks.filter(t => t.type === 'text'),
+      ...tracks.filter(t => t.type === 'video').reverse(),
+      ...audio,
+    ];
   }, [tracks, currentView]);
 
   // Quels clips appartiennent à quelle piste — filtre par type-cohérence
@@ -677,7 +686,7 @@ export default function Timeline() {
 
   return (
     <div className="flex flex-col h-full bg-gray-900 text-gray-300 border-t border-gray-700 select-none">
-      <TimelineToolbar onDeleteClip={removeClip} />
+      <TimelineToolbar onDeleteClips={removeClips} />
       <div
         ref={timelineRef}
         className={`timeline-container flex-1 overflow-x-auto overflow-y-hidden relative custom-scrollbar ${isScrubbing ? 'cursor-grabbing' : 'cursor-default'}`}
@@ -774,7 +783,7 @@ export default function Timeline() {
                     className={`absolute top-1 bottom-1 rounded border overflow-hidden flex items-center px-2 text-xs group transition-all duration-150
                       ${getClipStyle(clip.type)}
                       ${activeTool === 'cut' ? 'cursor-crosshair' : 'cursor-grab active:cursor-grabbing'}
-                      ${selectedClipId === clip.id ? 'ring-2 ring-white border-white z-20 shadow-[0_0_15px_rgba(255,255,255,0.3)]' : 'hover:shadow-lg hover:shadow-white/5'}
+                      ${selectedClipIdSet.has(clip.id) ? 'ring-2 ring-white border-white z-20 shadow-[0_0_15px_rgba(255,255,255,0.3)]' : 'hover:shadow-lg hover:shadow-white/5'}
                       ${draggingClipId === clip.id ? 'opacity-80 z-30' : ''}
                     `}
                     style={{
