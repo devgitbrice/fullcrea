@@ -372,6 +372,8 @@ export default function Player() {
                 maxWidth: '100%',
                 width: 'auto',
                 height: '100%',
+                // Référence des unités cqw utilisées par le calque texte
+                containerType: 'inline-size',
               }}
             >
 
@@ -402,28 +404,10 @@ export default function Player() {
                     </div>
                 )}
 
-                {/* Affichage des clips texte en superposition */}
-                {activeTextClips.map(textClip => (
-                  <div
-                    key={textClip.id}
-                    className="absolute inset-0 flex items-center justify-center pointer-events-none z-30"
-                  >
-                    <span
-                      style={{
-                        fontSize: `${textClip.fontSize || 48}px`,
-                        fontFamily: textClip.fontFamily || 'Arial',
-                        color: textClip.textColor || '#ffffff',
-                        textShadow: '2px 2px 4px rgba(0,0,0,0.8)',
-                        whiteSpace: 'pre-wrap',
-                        textAlign: 'center',
-                        maxWidth: '90%',
-                      }}
-                    >
-                      {textClip.text || 'Texte'}
-                    </span>
-                  </div>
-                ))}
                 </div>
+            ) : activeTextClips.length > 0 ? (
+                /* Texte seul : fond noir, comme à l'export */
+                null
             ) : (
                 <div className="flex flex-col items-center gap-3 opacity-50">
                     {activeAudioClip ? (
@@ -438,6 +422,31 @@ export default function Player() {
                     )}
                 </div>
             )}
+
+            {/* Calque texte : au-dessus de la scène, qu'il y ait une vidéo ou non.
+                La taille est exprimée en pourcentage de la largeur du cadre (cqw) pour
+                que les proportions soient identiques à l'export et au lien de partage. */}
+            {activeTextClips.map(textClip => (
+              <div
+                key={textClip.id}
+                className="absolute inset-0 flex items-center justify-center pointer-events-none z-30"
+              >
+                <span
+                  style={{
+                    fontSize: `${((textClip.fontSize || 48) / projectSettings.width) * 100}cqw`,
+                    fontFamily: textClip.fontFamily || 'Arial',
+                    color: textClip.textColor || '#ffffff',
+                    textShadow: '2px 2px 4px rgba(0,0,0,0.8)',
+                    whiteSpace: 'pre-wrap',
+                    textAlign: 'center',
+                    maxWidth: '90%',
+                    lineHeight: 1.2,
+                  }}
+                >
+                  {textClip.text || 'Texte'}
+                </span>
+              </div>
+            ))}
 
             {/* Overlay REC */}
             {isPlaying && (

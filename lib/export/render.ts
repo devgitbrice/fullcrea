@@ -2,6 +2,7 @@
 
 import { fetchFile } from '@ffmpeg/util';
 import { getFFmpeg } from './ffmpeg';
+import { renderTextOverlayPng } from './textOverlay';
 import type { Clip, Track } from '@/lib/timeline/types';
 import { buildVideoSegments, exportableAudioClips } from '@/lib/timeline/segments';
 
@@ -13,6 +14,9 @@ interface RenderOptions {
   pixelsPerSecond: number; // pour convertir start_px / width_px en secondes
   width: number;
   height: number;
+  /** Largeur de composition du projet : sert à mettre le texte à l'échelle
+   *  quand on exporte dans une résolution différente (défaut : `width`). */
+  projectWidth?: number;
   fps?: number;
   onProgress?: RenderProgress;
 }
@@ -45,7 +49,6 @@ const fmt = (sec: number) => Math.max(0, sec).toFixed(3);
  *  4. Mux final : l'audio des vidéos est conservé et mixé avec les clips audio.
  *
  * Limitations restantes :
- *  - Pas de texte overlay (clips type 'text' ignorés)
  *  - Pas de transformations (rotation/scale/position) — chaque clip est juste mis à l'échelle
  */
 export async function renderProjectToMp4({
@@ -54,6 +57,7 @@ export async function renderProjectToMp4({
   pixelsPerSecond,
   width,
   height,
+  projectWidth,
   fps = 30,
   onProgress,
 }: RenderOptions): Promise<Blob> {
@@ -86,8 +90,22 @@ export async function renderProjectToMp4({
     return name;
   };
 
+  // Calque de texte : rendu en PNG transparent à la résolution de sortie, puis
+  // composé sur l'image. Le texte garde ainsi exactement les proportions de
+  // l'aperçu et du lecteur de partage.
+  const textOverlayFor = async (seg: (typeof segments)[number], index: number): Promise<string | null> => {
+    if (seg.texts.length === 0) return null;
+    const png = await renderTextOverlayPng(seg.texts, width, height, projectWidth ?? width);
+    if (!png) return null;
+    const name = `txt_${index}.png`;
+    await ff.writeFile(name, png);
+    return name;
+  };
+  const overlayChain = (source: string) => `${source}[2:v]overlay=0:0:eof_action=repeat[v]`;
+
   report('Préparation des clips…', 0);
   const segmentNames: string[] = [];
+  const overlayNames: string[] = [];
   let processed = 0;
   const total = segments.length + audioClips.length;
 
@@ -97,11 +115,19 @@ export async function renderProjectToMp4({
     const outName = `vseg_${i}.mp4`;
     const clip = seg.clip;
 
+    const textPng = await textOverlayFor(seg, i);
+    if (textPng) overlayNames.push(textPng);
+    const textInput = textPng ? ['-i', textPng] : [];
+
     if (!clip) {
-      // Segment noir (trou entre deux clips, ou avant le premier)
+      // Segment noir (trou entre deux clips, ou texte sur fond noir)
       await ff.exec([
         '-f', 'lavfi', '-t', d, '-i', `color=c=black:s=${width}x${height}:r=${fps}`,
         '-f', 'lavfi', '-t', d, '-i', 'anullsrc=r=44100:cl=stereo',
+        ...textInput,
+        ...(textPng
+          ? ['-filter_complex', overlayChain('[0:v]'), '-map', '[v]', '-map', '1:a:0']
+          : []),
         ...encodeArgs,
         '-shortest',
         '-y',
@@ -113,7 +139,10 @@ export async function renderProjectToMp4({
       await ff.exec([
         '-loop', '1', '-t', d, '-i', inputName,
         '-f', 'lavfi', '-t', d, '-i', 'anullsrc=r=44100:cl=stereo',
-        '-vf', scaleFilter,
+        ...textInput,
+        ...(textPng
+          ? ['-filter_complex', `[0:v]${scaleFilter}[bg];${overlayChain('[bg]')}`, '-map', '[v]', '-map', '1:a:0']
+          : ['-vf', scaleFilter]),
         ...encodeArgs,
         '-shortest',
         '-y',
@@ -124,21 +153,31 @@ export async function renderProjectToMp4({
       // silence) pour garantir un flux audio même si la source n'en a pas.
       const inputName = await inputFor(clip);
       const muted = !!clip.muted || !!trackById.get(clip.track)?.muted;
+      const videoChain = textPng ? `[0:v]${scaleFilter}[bg];${overlayChain('[bg]')}` : null;
       const head = [
         '-ss', fmt(seg.inSec), '-i', inputName,
         '-f', 'lavfi', '-t', d, '-i', 'anullsrc=r=44100:cl=stereo',
-        '-t', d, '-vf', scaleFilter,
+        ...textInput,
+        '-t', d,
+        ...(videoChain ? [] : ['-vf', scaleFilter]),
       ];
+      const videoMap = videoChain ? ['-map', '[v]'] : ['-map', '0:v:0'];
       const tail = [...encodeArgs, '-y', outName];
-      const silentArgs = [...head, '-map', '0:v:0', '-map', '1:a:0', ...tail];
+      const silentArgs = [
+        ...head,
+        ...(videoChain ? ['-filter_complex', videoChain] : []),
+        ...videoMap, '-map', '1:a:0',
+        ...tail,
+      ];
       if (muted) {
         await ff.exec(silentArgs);
       } else {
         const volume = Math.min(1, Math.max(0, clip.volume ?? 1)).toFixed(3);
+        const audioChain = `[0:a]volume=${volume}[va];[va][1:a]amix=inputs=2:duration=longest:normalize=0[a]`;
         const code = await ff.exec([
           ...head,
-          '-filter_complex', `[0:a]volume=${volume}[va];[va][1:a]amix=inputs=2:duration=longest:normalize=0[a]`,
-          '-map', '0:v:0', '-map', '[a]',
+          '-filter_complex', videoChain ? `${videoChain};${audioChain}` : audioChain,
+          ...videoMap, '-map', '[a]',
           ...tail,
         ]);
         // Source sans flux audio ([0:a] introuvable) : on relance avec le silence
@@ -165,6 +204,7 @@ export async function renderProjectToMp4({
     'video_only.mp4',
   ]);
   for (const n of segmentNames) await ff.deleteFile(n).catch(() => undefined);
+  for (const n of overlayNames) await ff.deleteFile(n).catch(() => undefined);
 
   // 3) Clips audio : point d'entrée, volume puis délai absolu (une seule chaîne -af)
   const audioInputs: string[] = [];

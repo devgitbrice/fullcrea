@@ -249,6 +249,7 @@ export default function LivePlayer({ sequences, sequenceId, settings, bare = fal
                 whiteSpace: 'pre-wrap',
                 textAlign: 'center',
                 maxWidth: '90%',
+                lineHeight: 1.2,
               }}
             >
               {t.text || 'Texte'}

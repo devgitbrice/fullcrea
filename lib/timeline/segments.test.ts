@@ -79,3 +79,42 @@ test('exportableAudioClips : muted piste/clip, piste inexistante', () => {
   const muted = TRACKS.map(t => t.id === 2 ? { ...t, muted: true } : t);
   assert.deepEqual(exportableAudioClips(clips, muted), []);
 });
+
+// --- INCRUSTATION DU TEXTE ---
+
+const textClip = (id: string, start: number, width: number, text = 'Bonjour'): Clip => ({
+  id, name: id, type: 'text', track: 0, start, width, src: '', text,
+});
+
+test('les bords des textes découpent les segments', () => {
+  const clips = [clip('A', 1, 0, 300), textClip('T', 60, 60)];
+  const segs = buildVideoSegments(clips, TRACKS, PX, FPS);
+  assert.deepEqual(
+    segs.map(s => [s.clip?.id ?? null, s.startSec, s.durationSec, s.texts.map(t => t.id)]),
+    [
+      ['A', 0, 2, []],
+      ['A', 2, 2, ['T']],
+      ['A', 4, 6, []],
+    ],
+  );
+});
+
+test('texte sans clip visuel : un segment noir le porte quand même', () => {
+  const segs = buildVideoSegments([textClip('T', 0, 90)], TRACKS, PX, FPS);
+  assert.equal(segs.length, 1);
+  assert.equal(segs[0].clip, null);
+  assert.deepEqual(segs[0].texts.map(t => t.id), ['T']);
+  assert.equal(segs[0].durationSec, 3);
+});
+
+test('un texte vide n\'est pas exporté et ne découpe rien', () => {
+  const clips = [clip('A', 1, 0, 300), textClip('T', 60, 60, '   ')];
+  const segs = buildVideoSegments(clips, TRACKS, PX, FPS);
+  assert.deepEqual(segs.map(s => [s.clip?.id ?? null, s.durationSec]), [['A', 10]]);
+});
+
+test('deux textes superposés sont portés par le même segment', () => {
+  const segs = buildVideoSegments([textClip('T1', 0, 60), textClip('T2', 0, 60)], TRACKS, PX, FPS);
+  assert.equal(segs.length, 1);
+  assert.deepEqual(segs[0].texts.map(t => t.id), ['T1', 'T2']);
+});

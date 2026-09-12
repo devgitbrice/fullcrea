@@ -111,12 +111,11 @@ export default function ExportButton() {
   const hasClips = clips.length > 0;
   const durationLabel = formatSeconds(projectDurationPx / PIXELS_PER_SECOND);
 
-  const { hasText, hasTransforms } = useMemo(() => ({
-    hasText: clips.some((c) => c.type === 'text'),
-    hasTransforms: clips.some(
-      (c) => c.type === 'image' && !!c.transform && JSON.stringify(c.transform) !== DEFAULT_TRANSFORM_JSON
-    ),
-  }), [clips]);
+  // Les textes sont incrustés à l'export ; les transformations ne le sont pas encore
+  const hasTransforms = useMemo(() => clips.some(
+    (c) => (c.type === 'image' || c.type === 'video')
+      && !!c.transform && JSON.stringify(c.transform) !== DEFAULT_TRANSFORM_JSON
+  ), [clips]);
 
   const close = useCallback(() => setOpen(false), []);
   useEscapeKey(close, open && !rendering);
@@ -144,6 +143,7 @@ export default function ExportButton() {
       pixelsPerSecond: PIXELS_PER_SECOND,
       width: r.width,
       height: r.height,
+      projectWidth: projectSettings.width,
       fps: projectSettings.fps,
       onProgress: setProgress,
     });
@@ -335,11 +335,11 @@ export default function ExportButton() {
             </div>
           )}
 
-          {(hasText || hasTransforms) && (
+          {hasTransforms && (
             <div className="text-xs text-amber-200 bg-amber-950/40 border border-amber-900 rounded p-2 flex items-start gap-2">
               <AlertTriangle size={12} className="shrink-0 mt-0.5 text-amber-400" />
               <span className="break-words">
-                Les textes et les transformations d&apos;image ne sont pas encore inclus dans l&apos;export.
+                Les transformations (rotation, échelle, position) ne sont pas encore appliquées à l&apos;export.
               </span>
             </div>
           )}
