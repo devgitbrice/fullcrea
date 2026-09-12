@@ -37,7 +37,7 @@ function formatDuration(px: number): string {
 export default function MindmapView({ onClose }: { onClose: () => void }) {
   const {
     currentProject, renameProject, sequences, activeSequenceId, isPersistenceCloud,
-    createSequence, selectSequence, renameSequence, moveSequence, deleteSequence, buildMasterSequence,
+    createSequence, selectSequence, renameSequence, moveSequence, deleteSequence, buildMasterSequence, saveNow,
   } = useProject();
   const { toast } = useToast();
 
@@ -168,6 +168,9 @@ export default function MindmapView({ onClose }: { onClose: () => void }) {
     setSharing(id);
     try {
       const sequenceId = id === 'project' ? buildMasterSequence() : id;
+      // Le lecteur du lien lit la base : la timeline (l'assemblage tout juste
+      // construit compris) doit y être avant d'ouvrir la page.
+      await saveNow();
       const supabase = getSupabase();
       if (!supabase) throw new Error('Supabase indisponible');
       const user = await getCurrentUser(supabase);

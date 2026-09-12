@@ -148,6 +148,8 @@ interface ProjectContextType {
    * autres dans l'ordre, et renvoie son id.
    */
   buildMasterSequence: () => string;
+  /** Vide la file de sauvegarde immédiatement (avant d'ouvrir un lien de partage). */
+  saveNow: () => Promise<void>;
   deleteSequence: (id: string) => void;
   // Insère une autre timeline comme un clip dans la timeline active
   insertSequenceClip: (sequenceId: string, atPx: number) => string | null;
@@ -1312,6 +1314,29 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     return () => sub.subscription.unsubscribe();
   }, []);
 
+  /**
+   * Force une sauvegarde immédiate du cloud, sans attendre le debounce. Utilisée
+   * avant d'ouvrir un lien de partage : le spectateur doit voir l'état courant
+   * (par exemple la timeline d'assemblage tout juste construite).
+   * Deux rAF laissent React committer les setState déclenchés juste avant.
+   */
+  const saveNow = useCallback(async (): Promise<void> => {
+    await new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+    const supabase = supabaseRef.current;
+    const userId = userIdRef.current;
+    if (!supabase || !userId) return;
+    const run = saveChainRef.current.then(async () => {
+      for (const p of projectsRef.current) {
+        if (lastSavedRef.current.get(p.id) === p) continue;
+        await upsertProject(supabase, userId, p);
+        lastSavedRef.current.set(p.id, p);
+      }
+    });
+    // La file de sauvegarde ne doit pas rester bloquée sur un échec
+    saveChainRef.current = run.catch(() => {});
+    await run;
+  }, []);
+
   // --- SAUVEGARDE DEBOUNCED ---
   useEffect(() => {
     if (!isHydrated) return;
@@ -1564,6 +1589,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
       sequences: currentProject.sequences, activeSequenceId: currentProject.activeSequenceId,
       createSequence, selectSequence, renameSequence, moveSequence, deleteSequence, insertSequenceClip,
       buildMasterSequence,
+      saveNow,
       flatClips, allTracks,
       previewAsset, setPreviewAsset, scale: PX_PER_SEC_BASE * zoomLevel,
       projectSettings: currentProject.projectSettings, setProjectSettings,

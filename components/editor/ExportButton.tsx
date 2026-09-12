@@ -68,7 +68,7 @@ export default function ExportButton() {
   // Export de la timeline active, timelines imbriquées dépliées
   const {
     flatClips: clips, allTracks: tracks, currentProject, projectSettings, projectDurationPx, isPersistenceCloud,
-    activeSequenceId,
+    activeSequenceId, saveNow,
   } = useProject();
   const { toast } = useToast();
   const [open, setOpen] = useState(false);
@@ -181,7 +181,9 @@ export default function ExportButton() {
     if (!user) throw new Error('Session expirée : reconnecte-toi pour publier un lien.');
 
     if (liveLink) {
-      // Aucun rendu : le lecteur public rejoue la timeline telle qu'elle est
+      // Aucun rendu : le lecteur public rejoue la timeline telle qu'elle est,
+      // lue depuis la base — on y écrit donc l'état courant avant de publier.
+      await saveNow();
       const created = await createLiveShare(supabase, user.id, {
         projectId: currentProject.id,
         sequenceId: activeSequenceId,
