@@ -262,11 +262,20 @@ export async function fetchSharePayload(supabase: SupabaseClient, id: string): P
     ? share.sequenceId!
     : (sequences.find((s) => s.id === project.activeSequenceId)?.id ?? sequences[0].id);
 
+  // Réglages absents (ligne de settings jamais écrite) : on retombe sur du
+  // 1080p plutôt que de laisser le lecteur planter sur settings.width.
+  const rawSettings = project.settings as Partial<ProjectSettings> | null;
+  const settings: ProjectSettings = {
+    width: rawSettings?.width && rawSettings.width > 0 ? rawSettings.width : 1920,
+    height: rawSettings?.height && rawSettings.height > 0 ? rawSettings.height : 1080,
+    fps: rawSettings?.fps && rawSettings.fps > 0 ? rawSettings.fps : 30,
+  };
+
   return {
     share,
     montage: {
       title: project.name || share.title,
-      settings: project.settings,
+      settings,
       sequences,
       sequenceId,
       updatedAt: (data.updatedAt as string | null) ?? null,

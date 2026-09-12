@@ -26,10 +26,22 @@ function pgError(prefix: string, err: { message?: string; details?: string; hint
 type Row = Record<string, unknown>;
 const missingColumns = new Map<string, Set<string>>();
 
-function missingColumnName(err: { code?: string; message?: string }): string | null {
+// Seules des propriétés d'agrément peuvent être abandonnées. Les colonnes
+// structurelles (rattachement aux timelines, géométrie des clips) ne sont
+// JAMAIS retirées : les perdre casserait le projet en silence, mieux vaut
+// l'erreur de sauvegarde visible qui invite à appliquer supabase/schema.sql.
+const OPTIONAL_COLUMNS: Record<string, Set<string>> = {
+  fullcrea_tracks: new Set(['solo', 'height_px', 'collapsed', 'kind', 'hidden', 'locked', 'muted']),
+  fullcrea_clips: new Set(['speed', 'fade_in_px', 'fade_out_px', 'transition', 'link_id', 'tts', 'volume', 'muted', 'source_duration_px']),
+  fullcrea_projects: new Set(['markers']),
+};
+
+function missingColumnName(table: string, err: { code?: string; message?: string }): string | null {
   if (err.code !== 'PGRST204') return null;
   const m = /'([^']+)' column/.exec(err.message ?? '');
-  return m ? m[1] : null;
+  const column = m ? m[1] : null;
+  if (!column) return null;
+  return OPTIONAL_COLUMNS[table]?.has(column) ? column : null;
 }
 
 function stripKnownMissing(table: string, rows: Row[]): Row[] {
@@ -64,12 +76,33 @@ async function writeTolerant(
     const query = supabase.from(table);
     const { error } = mode === 'insert' ? await query.insert(payload) : await query.upsert(payload);
     if (!error) return;
-    const column = missingColumnName(error);
+    const column = missingColumnName(table, error);
     if (!column) throw pgError(prefix, error);
     rememberMissing(table, column);
     payload = stripKnownMissing(table, payload);
   }
   throw new Error(`${prefix}: trop de colonnes manquantes dans ${table}`);
+}
+
+
+// Supprime les lignes du projet qui ne font plus partie de l'état sauvegardé.
+// Appelée APRÈS une écriture réussie : une sauvegarde interrompue ne peut donc
+// jamais laisser le projet amputé dans la base.
+async function deleteStale(
+  supabase: SupabaseClient,
+  table: string,
+  projectId: string,
+  keyColumn: string,
+  keptKeys: (string | number)[],
+  prefix: string
+): Promise<void> {
+  let query = supabase.from(table).delete().eq('project_id', projectId);
+  if (keptKeys.length > 0) {
+    const list = keptKeys.map(k => typeof k === 'number' ? String(k) : `"${String(k).replace(/"/g, '\\"')}"`).join(',');
+    query = query.not(keyColumn, 'in', `(${list})`);
+  }
+  const { error } = await query;
+  if (error) throw pgError(prefix, error);
 }
 
 // --- Lecture ---
@@ -237,12 +270,10 @@ export async function upsertProject(
   });
   if (sErr) throw pgError('Écriture fullcrea_project_settings échouée', sErr);
 
-  // Clips d'abord (FK vers tracks), puis tracks
-  const { error: cDelErr } = await supabase.from('fullcrea_clips').delete().eq('project_id', p.id);
-  if (cDelErr) throw pgError('Purge fullcrea_clips échouée', cDelErr);
-  const { error: tDelErr } = await supabase.from('fullcrea_tracks').delete().eq('project_id', p.id);
-  if (tDelErr) throw pgError('Purge fullcrea_tracks échouée', tDelErr);
-
+  // Écriture NON destructive : on met à jour (upsert) puis on supprime seulement
+  // les lignes disparues, une fois l'écriture réussie. L'ancienne stratégie
+  // « purge puis insert » perdait toutes les pistes et tous les clips du projet
+  // dès que l'insert échouait (colonne manquante, coupure réseau…).
   // Toutes les timelines sont écrites (pas seulement l'active) : les ids de
   // piste sont uniques dans tout le projet, la PK (project_id, track_index) tient.
   const allTracks = p.sequences.flatMap((seq) => seq.tracks.map((t) => ({ t, sequenceId: seq.id })));
@@ -262,7 +293,7 @@ export async function upsertProject(
         height_px: t.height ?? null,
         collapsed: !!t.collapsed,
       })),
-      'insert', 'Écriture fullcrea_tracks échouée');
+      'upsert', 'Écriture fullcrea_tracks échouée');
   }
 
   // Garde anti-orphelins : la FK (project_id, track_index) refuserait un clip
@@ -305,16 +336,19 @@ export async function upsertProject(
         font_family: c.fontFamily ?? null,
         text_color: c.textColor ?? null,
       })),
-      'insert', 'Écriture fullcrea_clips échouée');
+      'upsert', 'Écriture fullcrea_clips échouée');
   }
+
+  // Lignes disparues, supprimées seulement maintenant : clips d'abord (FK vers
+  // les pistes), puis pistes.
+  await deleteStale(supabase, 'fullcrea_clips', p.id, 'id', safeClips.map(({ c }) => c.id), 'Nettoyage fullcrea_clips échoué');
+  await deleteStale(supabase, 'fullcrea_tracks', p.id, 'track_index', allTracks.map(({ t }) => t.id), 'Nettoyage fullcrea_tracks échoué');
 
   // Assets : on filtre les blob: URLs (créées via URL.createObjectURL),
   // qui ne survivent pas à un reload donc inutiles à persister.
   const persistableAssets = p.assets.filter((a) => !a.src.startsWith('blob:'));
-  const { error: aDelErr } = await supabase.from('fullcrea_assets').delete().eq('project_id', p.id);
-  if (aDelErr) throw pgError('Purge fullcrea_assets échouée', aDelErr);
   if (persistableAssets.length > 0) {
-    const { error: aErr } = await supabase.from('fullcrea_assets').insert(
+    const { error: aErr } = await supabase.from('fullcrea_assets').upsert(
       persistableAssets.map((a) => ({
         id: a.id,
         project_id: p.id,
@@ -325,6 +359,7 @@ export async function upsertProject(
     );
     if (aErr) throw pgError('Écriture fullcrea_assets échouée', aErr);
   }
+  await deleteStale(supabase, 'fullcrea_assets', p.id, 'id', persistableAssets.map(a => a.id), 'Nettoyage fullcrea_assets échoué');
 }
 
 export async function deleteProjectRow(
