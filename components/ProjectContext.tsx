@@ -1339,11 +1339,11 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     const userId = userIdRef.current;
     if (!supabase || !userId) return;
     const run = saveChainRef.current.then(async () => {
-      for (const p of projectsRef.current) {
-        if (lastSavedRef.current.get(p.id) === p) continue;
-        await upsertProject(supabase, userId, p);
-        lastSavedRef.current.set(p.id, p);
-      }
+      // Seul le projet courant est écrit : c'est lui que le lien va montrer
+      const p = projectsRef.current.find(x => x.id === currentProjectIdRef.current);
+      if (!p || lastSavedRef.current.get(p.id) === p) return;
+      await upsertProject(supabase, userId, p);
+      lastSavedRef.current.set(p.id, p);
     });
     // La file de sauvegarde ne doit pas rester bloquée sur un échec
     saveChainRef.current = run.catch(() => {});

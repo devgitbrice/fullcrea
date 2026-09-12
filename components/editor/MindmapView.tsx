@@ -185,12 +185,12 @@ export default function MindmapView({ onClose }: { onClose: () => void }) {
     setSharing(id);
     try {
       const sequenceId = id === 'project' ? buildMasterSequence() : id;
-      // Le lecteur du lien lit la base : la timeline (l'assemblage tout juste
-      // construit compris) doit y être avant d'ouvrir la page.
-      await saveNow();
       const supabase = getSupabase();
       if (!supabase) throw new Error('Supabase indisponible');
-      const user = await getCurrentUser(supabase);
+      // Le lecteur du lien lit la base : la timeline (l'assemblage tout juste
+      // construit compris) doit y être avant d'ouvrir la page. La session est
+      // vérifiée pendant ce temps.
+      const [user] = await Promise.all([getCurrentUser(supabase), saveNow()]);
       if (!user) throw new Error('Session expirée : reconnecte-toi');
       const seq = sequencesRef.current.find(s => s.id === sequenceId);
       const share = await createLiveShare(supabase, user.id, {

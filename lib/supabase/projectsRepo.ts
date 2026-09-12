@@ -302,7 +302,9 @@ export async function upsertProject(
   userId: string,
   p: Project
 ): Promise<void> {
-  await writeTolerant(supabase, 'fullcrea_projects', [{
+  // Quatre étapes, chacune en parallèle : (1) projet + réglages, (2) pistes,
+  // (3) clips + assets (FK vers les pistes pour les clips), (4) nettoyage.
+  const writeProject = writeTolerant(supabase, 'fullcrea_projects', [{
     id: p.id,
     user_id: userId,
     name: p.name,
@@ -315,13 +317,16 @@ export async function upsertProject(
     active_sequence_id: p.activeSequenceId,
   }], 'upsert', 'Écriture fullcrea_projects échouée');
 
-  const { error: sErr } = await supabase.from('fullcrea_project_settings').upsert({
-    project_id: p.id,
-    width: p.projectSettings.width,
-    height: p.projectSettings.height,
-    fps: p.projectSettings.fps,
-  });
-  if (sErr) throw pgError('Écriture fullcrea_project_settings échouée', sErr);
+  const writeSettings = (async () => {
+    const { error: sErr } = await supabase.from('fullcrea_project_settings').upsert({
+      project_id: p.id,
+      width: p.projectSettings.width,
+      height: p.projectSettings.height,
+      fps: p.projectSettings.fps,
+    });
+    if (sErr) throw pgError('Écriture fullcrea_project_settings échouée', sErr);
+  })();
+  await Promise.all([writeProject, writeSettings]);
 
   // Écriture NON destructive : on met à jour (upsert) puis on supprime seulement
   // les lignes disparues, une fois l'écriture réussie. L'ancienne stratégie
@@ -360,8 +365,8 @@ export async function upsertProject(
       console.warn(`[fullcrea] Clip ${c.id} ignoré à la sauvegarde : piste ${c.track} inexistante`);
       return false;
     });
-  if (safeClips.length > 0) {
-    await writeTolerant(supabase, 'fullcrea_clips',
+  const persistableAssets = p.assets.filter((a) => !a.src.startsWith('blob:'));
+  const writeClips = safeClips.length === 0 ? Promise.resolve() : writeTolerant(supabase, 'fullcrea_clips',
       safeClips.map(({ c, sequenceId }) => ({
         id: c.id,
         project_id: p.id,
@@ -390,17 +395,11 @@ export async function upsertProject(
         text_color: c.textColor ?? null,
       })),
       'upsert', 'Écriture fullcrea_clips échouée');
-  }
 
-  // Lignes disparues, supprimées seulement maintenant : clips d'abord (FK vers
-  // les pistes), puis pistes.
-  await deleteStale(supabase, 'fullcrea_clips', p.id, 'id', safeClips.map(({ c }) => c.id), 'Nettoyage fullcrea_clips échoué');
-  await deleteStale(supabase, 'fullcrea_tracks', p.id, 'track_index', allTracks.map(({ t }) => t.id), 'Nettoyage fullcrea_tracks échoué');
-
-  // Assets : on filtre les blob: URLs (créées via URL.createObjectURL),
-  // qui ne survivent pas à un reload donc inutiles à persister.
-  const persistableAssets = p.assets.filter((a) => !a.src.startsWith('blob:'));
-  if (persistableAssets.length > 0) {
+  // Assets : les blob: URLs (URL.createObjectURL) ne survivent pas à un reload,
+  // inutiles à persister.
+  const writeAssets = (async () => {
+    if (persistableAssets.length === 0) return;
     const { error: aErr } = await supabase.from('fullcrea_assets').upsert(
       persistableAssets.map((a) => ({
         id: a.id,
@@ -411,8 +410,16 @@ export async function upsertProject(
       }))
     );
     if (aErr) throw pgError('Écriture fullcrea_assets échouée', aErr);
-  }
-  await deleteStale(supabase, 'fullcrea_assets', p.id, 'id', persistableAssets.map(a => a.id), 'Nettoyage fullcrea_assets échoué');
+  })();
+  await Promise.all([writeClips, writeAssets]);
+
+  // Lignes disparues, supprimées seulement maintenant. Les pistes attendent les
+  // clips (FK) ; les assets sont indépendants.
+  await Promise.all([
+    deleteStale(supabase, 'fullcrea_clips', p.id, 'id', safeClips.map(({ c }) => c.id), 'Nettoyage fullcrea_clips échoué')
+      .then(() => deleteStale(supabase, 'fullcrea_tracks', p.id, 'track_index', allTracks.map(({ t }) => t.id), 'Nettoyage fullcrea_tracks échoué')),
+    deleteStale(supabase, 'fullcrea_assets', p.id, 'id', persistableAssets.map(a => a.id), 'Nettoyage fullcrea_assets échoué'),
+  ]);
 }
 
 export async function deleteProjectRow(

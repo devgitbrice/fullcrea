@@ -36,6 +36,13 @@ export interface CurrentUser {
  * L'AuthGate est responsable d'amener l'utilisateur à se connecter.
  */
 export async function getCurrentUser(supabase: SupabaseClient): Promise<CurrentUser | null> {
+  // La session est déjà en mémoire/localStorage : pas d'aller-retour réseau
+  // tant qu'elle est valide. getUser() (vérification serveur) ne sert que de repli.
+  const { data: { session } } = await supabase.auth.getSession();
+  const cached = session?.user;
+  if (cached && (session.expires_at ?? 0) * 1000 > Date.now() + 30_000) {
+    return { id: cached.id, email: cached.email ?? null };
+  }
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return null;
   return { id: user.id, email: user.email ?? null };
