@@ -240,9 +240,16 @@ export async function fetchAllProjects(supabase: SupabaseClient, userId: string)
       sequences.push(rescued);
     }
 
-    const activeId = sequences.some((x) => x.id === p.active_sequence_id)
+    let activeId = sequences.some((x) => x.id === p.active_sequence_id)
       ? (p.active_sequence_id as string)
       : sequences[0].id;
+    // Si la timeline déclarée active est vide alors qu'une timeline récupérée
+    // porte du contenu, on ouvre celle-ci : sinon le projet s'ouvre sur une
+    // timeline vide et le montage retrouvé passe inaperçu.
+    if (orphanIds.length > 0 && sequences.find((x) => x.id === activeId)?.clips.length === 0) {
+      const withContent = sequences.find((x) => orphanIds.includes(x.id) && x.clips.length > 0);
+      if (withContent) activeId = withContent.id;
+    }
     const active = sequences.find((x) => x.id === activeId)!;
 
     return {
