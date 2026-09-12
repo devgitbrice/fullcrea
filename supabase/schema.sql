@@ -7,7 +7,8 @@
 --   [ ] Ré-exécuter ce fichier ENTIER après chaque mise à jour de l'app :
 --       la section 5 bis (migrations) ajoute les colonnes récentes
 --       (offset_px, source_duration_px, volume, muted, hidden, locked, markers,
---       kind, tts, sequences, active_sequence_id, sequence_id, sequence_ref).
+--       kind, tts, sequences, active_sequence_id, sequence_id, sequence_ref)
+--       et crée la table fullcrea_shares (partage par lien et intégration).
 --       Sans elles, l'insert échoue « column … does not exist » et l'indicateur
 --       de sauvegarde passe en erreur.
 --   [ ] Vérifier que le bucket 'fullcrea-assets' est Public (section 7).
@@ -183,6 +184,47 @@ CREATE INDEX IF NOT EXISTS idx_fullcrea_tracks_sequence
     ON fullcrea_tracks(project_id, sequence_id);
 CREATE INDEX IF NOT EXISTS idx_fullcrea_clips_sequence
     ON fullcrea_clips(project_id, sequence_id);
+
+
+-- =====================================================
+-- 5 ter. fullcrea_shares — vidéos partagées (lien public + intégration)
+--   La vidéo rendue est déposée dans le bucket public ; cette table donne
+--   le lien /v/<id> et le code d'intégration /embed/<id>.
+--   Lecture PUBLIQUE (un lien doit s'ouvrir sans compte), écriture réservée
+--   au propriétaire.
+-- =====================================================
+CREATE TABLE IF NOT EXISTS fullcrea_shares (
+    id            TEXT PRIMARY KEY,
+    user_id       UUID REFERENCES auth.users(id) ON DELETE CASCADE,
+    project_id    TEXT,
+    title         TEXT NOT NULL,
+    src           TEXT NOT NULL,
+    storage_path  TEXT,
+    width         INTEGER NOT NULL DEFAULT 1920 CHECK (width  > 0),
+    height        INTEGER NOT NULL DEFAULT 1080 CHECK (height > 0),
+    duration_sec  DOUBLE PRECISION,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_fullcrea_shares_user
+    ON fullcrea_shares(user_id);
+
+ALTER TABLE fullcrea_shares ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS fullcrea_shares_select_public ON fullcrea_shares;
+DROP POLICY IF EXISTS fullcrea_shares_insert_own    ON fullcrea_shares;
+DROP POLICY IF EXISTS fullcrea_shares_update_own    ON fullcrea_shares;
+DROP POLICY IF EXISTS fullcrea_shares_delete_own    ON fullcrea_shares;
+
+-- N'importe qui (y compris anon) peut lire un partage : c'est le principe du lien
+CREATE POLICY fullcrea_shares_select_public ON fullcrea_shares
+    FOR SELECT USING (true);
+CREATE POLICY fullcrea_shares_insert_own ON fullcrea_shares
+    FOR INSERT WITH CHECK (auth.uid() = user_id);
+CREATE POLICY fullcrea_shares_update_own ON fullcrea_shares
+    FOR UPDATE USING (auth.uid() = user_id);
+CREATE POLICY fullcrea_shares_delete_own ON fullcrea_shares
+    FOR DELETE USING (auth.uid() = user_id);
 
 
 -- =====================================================
