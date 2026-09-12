@@ -218,6 +218,28 @@ export async function fetchAllProjects(supabase: SupabaseClient, userId: string)
       master: meta.master || undefined,
     }));
 
+    // Récupération : des pistes ou des clips peuvent porter l'id d'une timeline
+    // absente des métadonnées (métadonnées écrasées, migration interrompue).
+    // Plutôt que de les ignorer en silence — le projet paraît alors vide alors
+    // que tout est en base — on reconstitue une timeline pour chacun.
+    const knownIds = new Set(sequences.map((x) => x.id));
+    const orphanIds = [...new Set([
+      ...trackRows.map((t) => t.sequenceId),
+      ...clipRows.map((c) => c.sequenceId),
+    ])].filter((id) => !knownIds.has(id));
+    for (const [i, id] of orphanIds.entries()) {
+      const rescued: Sequence = {
+        id,
+        name: `Timeline récupérée ${i + 1}`,
+        tracks: trackRows.filter((t) => t.sequenceId === id).map((t) => t.track),
+        clips: clipRows.filter((c) => c.sequenceId === id).map((c) => c.clip),
+        markers: EMPTY_MARKERS,
+        workArea: null,
+      };
+      console.warn(`[fullcrea] Timeline « ${id} » absente des métadonnées : ${rescued.clips.length} clip(s) récupéré(s).`);
+      sequences.push(rescued);
+    }
+
     const activeId = sequences.some((x) => x.id === p.active_sequence_id)
       ? (p.active_sequence_id as string)
       : sequences[0].id;

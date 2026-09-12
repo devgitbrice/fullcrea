@@ -258,6 +258,24 @@ export async function fetchSharePayload(supabase: SupabaseClient, id: string): P
     master: meta.master || undefined,
   }));
 
+  // Même récupération que dans l'éditeur : des lignes rattachées à une timeline
+  // absente des métadonnées ne doivent pas disparaître du lecteur.
+  const knownIds = new Set(sequences.map((x) => x.id));
+  const orphanIds = [...new Set([
+    ...(project.tracks ?? []).map((t) => t.sequence_id ?? MAIN_SEQUENCE_ID),
+    ...(project.clips ?? []).map((c) => c.sequence_id ?? MAIN_SEQUENCE_ID),
+  ])].filter((id) => !knownIds.has(id));
+  for (const [i, id] of orphanIds.entries()) {
+    sequences.push({
+      id,
+      name: `Timeline récupérée ${i + 1}`,
+      tracks: (project.tracks ?? []).filter((t) => (t.sequence_id ?? MAIN_SEQUENCE_ID) === id).map(toTrack),
+      clips: (project.clips ?? []).filter((c) => (c.sequence_id ?? MAIN_SEQUENCE_ID) === id).map(toClip),
+      markers: EMPTY_MARKERS as Marker[],
+      workArea: null,
+    });
+  }
+
   const sequenceId = sequences.some((s) => s.id === share.sequenceId)
     ? share.sequenceId!
     : (sequences.find((s) => s.id === project.activeSequenceId)?.id ?? sequences[0].id);
