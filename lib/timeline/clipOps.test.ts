@@ -6,6 +6,7 @@ import {
   splitClip, computeRipple, overlapsOnTrack, findFreeStart, findFreeGroupDelta,
   neighborBounds, findActiveVisual, findActiveAudio, mediaTimeSec, clipEdges, isClipLocked, newId, trimBounds, clamp,
   flattenClips, wouldCreateCycle, sequenceDurationPx, clipSpeed, sourceSpanPx, clipGain,
+  insertRipple, groupTrackShift, copyClipStyle, applyClipStyle,
 } from './clipOps.ts';
 
 const clip = (id: string, track: number, start: number, width: number, extra: Partial<Clip> = {}): Clip => ({
@@ -284,4 +285,58 @@ test('clipGain : volume, fondus d\'entrée et de sortie, muet', () => {
   assert.equal(clipGain(c, 100), 0);               // fin
   assert.equal(clipGain({ ...c, muted: true }, 50), 0);
   assert.equal(clipGain(clip('b', 2, 0, 100, { type: 'audio' }), 50), 1);
+});
+
+test('insertRipple : pousse les clips gênants vers la droite', () => {
+  const scene = [clip('a', 1, 0, 100), clip('b', 1, 100, 100)];
+  const moved = { ...clip('m', 1, 50, 60) };
+  const out = insertRipple([...scene, moved], [moved], new Set(['m']));
+  // « a » chevauche : il est repoussé derrière le clip inséré, « b » suit
+  assert.equal(out.find(c => c.id === 'a')!.start, 110);
+  assert.equal(out.find(c => c.id === 'b')!.start, 210);
+  assert.equal(out.find(c => c.id === 'm')!.start, 50);
+});
+
+test('insertRipple : sans chevauchement, rien ne bouge', () => {
+  const scene = [clip('a', 1, 0, 100)];
+  const moved = clip('m', 1, 200, 50);
+  const out = insertRipple([...scene, moved], [moved], new Set(['m']));
+  assert.equal(out.find(c => c.id === 'a')!.start, 0);
+});
+
+test('groupTrackShift : déplace tout le groupe ou rien', () => {
+  const order = [
+    { id: 1, type: 'video' }, { id: 3, type: 'video' }, { id: 2, type: 'audio' },
+  ];
+  const moving = [clip('a', 1, 0, 50), clip('b', 1, 100, 50)];
+  const ok = groupTrackShift(moving, order, 1);
+  assert.deepEqual([...ok!.values()], [3, 3]);
+  // Une rangée plus bas, la cible serait une piste audio : refus
+  assert.equal(groupTrackShift(moving, order, 2), null);
+  // Piste verrouillée : refus
+  assert.equal(groupTrackShift(moving, [{ id: 1, type: 'video' }, { id: 3, type: 'video', locked: true }], 1), null);
+  // Clip texte : jamais de déplacement vertical
+  assert.equal(groupTrackShift([clip('t', 1, 0, 50, { type: 'text' })], order, 1), null);
+});
+
+test('copyClipStyle / applyClipStyle : par type de clip', () => {
+  const source = clip('s', 1, 0, 100, {
+    volume: 0.5, speed: 2, fadeIn: 10, transform: { scaleX: 2, scaleY: 2 },
+    fontSize: 60, textColor: '#ff0000',
+  });
+  const style = copyClipStyle(source);
+  const onVideo = applyClipStyle(clip('v', 1, 0, 50), style);
+  assert.equal(onVideo.volume, 0.5);
+  assert.equal(onVideo.speed, 2);
+  assert.deepEqual(onVideo.transform, { scaleX: 2, scaleY: 2 });
+  assert.equal(onVideo.fontSize, undefined);        // pas de police sur une vidéo
+
+  const onAudio = applyClipStyle(clip('a', 2, 0, 50, { type: 'audio' }), style);
+  assert.equal(onAudio.fadeIn, 10);
+  assert.equal(onAudio.transform, undefined);       // pas de géométrie sur l'audio
+
+  const onText = applyClipStyle(clip('t', 0, 0, 50, { type: 'text' }), style);
+  assert.equal(onText.fontSize, 60);
+  assert.equal(onText.textColor, '#ff0000');
+  assert.equal(onText.speed, undefined);            // pas de vitesse sur un texte
 });

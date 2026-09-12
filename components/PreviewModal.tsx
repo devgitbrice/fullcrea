@@ -4,6 +4,7 @@ import { X, Film, Music, Image as ImageIcon } from 'lucide-react';
 import { useProject } from '@/components/ProjectContext';
 import { useEscapeKey } from '@/lib/hooks/useEscapeKey';
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { isEditableTarget } from '@/lib/keyboard';
 
 const TITLE_ID = 'preview-modal-title';
 
@@ -19,6 +20,7 @@ const formatDuration = (seconds: number) => {
 export default function PreviewModal() {
   const { previewAsset, setPreviewAsset } = useProject();
   const videoRef = useRef<HTMLVideoElement>(null);
+  const audioRef = useRef<HTMLAudioElement>(null);
   const closeBtnRef = useRef<HTMLButtonElement>(null);
 
   const [meta, setMeta] = useState<{ res: string; duration: string }>({
@@ -34,6 +36,24 @@ export default function PreviewModal() {
   // Reset au changement de fichier
   useEffect(() => {
     setMeta({ res: 'Chargement...', duration: '...' });
+  }, [previewAsset]);
+
+  // Barre d'espace : lecture / pause du média de la fenêtre. Les raccourcis
+  // globaux sont neutralisés tant qu'une modale est ouverte (shouldIgnoreShortcut),
+  // celui-ci est donc local à la fenêtre de lecture.
+  useEffect(() => {
+    if (!previewAsset) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.code !== 'Space' && e.key !== ' ') return;
+      if (isEditableTarget(e.target)) return;
+      const media = videoRef.current ?? audioRef.current;
+      if (!media) return;
+      e.preventDefault();   // évite le défilement et l'activation du bouton focalisé
+      if (media.paused) void media.play().catch(() => {});
+      else media.pause();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
   }, [previewAsset]);
 
   // aria-modal : déplacer le focus dans la boîte de dialogue, puis le rendre à l'élément déclencheur
@@ -159,6 +179,7 @@ export default function PreviewModal() {
                     <Music size={64} className="text-green-500" />
                 </div>
                 <audio
+                  ref={audioRef}
                   src={previewAsset.src}
                   controls
                   autoPlay

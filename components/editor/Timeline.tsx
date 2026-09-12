@@ -9,6 +9,7 @@ import { Music, Plus, Video, AudioLines, Type, X, MousePointerClick, MessageSqua
 import { useProject, Clip, PX_PER_SEC_BASE, MIN_CLIP_WIDTH_PX } from '@/components/ProjectContext';
 import {
   newId, neighborBounds, isClipLocked, overlapsOnTrack, findFreeStart, clipEdges, trimBounds, clamp,
+  insertRipple, groupTrackShift, copyClipStyle, applyClipStyle, type ClipStyle,
 } from '@/lib/timeline/clipOps';
 import { formatSeconds, formatTimecode } from '@/lib/timeline/format';
 import { probeMediaDuration } from '@/lib/media/probe';
@@ -53,6 +54,11 @@ const ZOOM_MIN = 0.1;
 const ZOOM_MAX = 10;
 const EPSILON = 1e-6;
 const OCCUPIED_MESSAGE = 'Emplacement occupé';
+// Aucun déplacement vertical en cours (map partagée, jamais mutée)
+const EMPTY_TRACK_SHIFT: Map<string, number> = new Map();
+// Défilement automatique quand le pointeur approche d'un bord pendant un geste
+const EDGE_SCROLL_ZONE_PX = 48;
+const EDGE_SCROLL_MAX_PX_PER_FRAME = 18;
 
 function formatPx(px: number): string {
   return formatSeconds(px / PX_PER_SEC_BASE);
@@ -79,6 +85,9 @@ export default function Timeline() {
   const playheadRef = useRef<HTMLDivElement>(null);
   const playheadHandleRef = useRef<HTMLDivElement>(null);
   const clipboardRef = useRef<Clip[]>([]);
+  // Presse-papier de propriétés (Ctrl+Alt+C / Ctrl+Alt+V)
+  const styleClipboardRef = useRef<ClipStyle | null>(null);
+  const insertModeRef = useRef(false);
   // Durées réelles déjà sondées, par source (px) : un média déposé deux fois
   // n'est sondé qu'une fois.
   const durationCacheRef = useRef<Map<string, number>>(new Map());
@@ -156,6 +165,10 @@ export default function Timeline() {
   const [cutHover, setCutHover] = useState<{ clipId: string; x: number } | null>(null);
   // Mode « Sélection multiple » (tactile) : tap = toggle, aucun drag
   const [multiSelectMode, setMultiSelectMode] = useState(false);
+  // Mode insertion : un dépôt qui chevauche pousse les clips suivants au lieu d'être refusé
+  const [insertMode, setInsertMode] = useState(false);
+  // Rectangle de sélection (Maj + glisser dans le vide), en px écran du conteneur
+  const [marquee, setMarquee] = useState<{ left: number; top: number; width: number; height: number } | null>(null);
   // Pistes spéciales : modale Voix Off (création ou édition d'un clip TTS) et choix de musique
   const [voiceOverEditor, setVoiceOverEditor] = useState<{ trackId: number; clip?: Clip } | null>(null);
   const [musicPickerTrack, setMusicPickerTrack] = useState<number | null>(null);
@@ -171,6 +184,7 @@ export default function Timeline() {
 
   useEffect(() => { isPlayingRef.current = isPlaying; }, [isPlaying]);
   useEffect(() => { snapEnabledRef.current = snapEnabled; }, [snapEnabled]);
+  useEffect(() => { insertModeRef.current = insertMode; }, [insertMode]);
   useEffect(() => { viewportWidthRef.current = viewportWidth; }, [viewportWidth]);
 
   // --- GÉOMÉTRIE : une seule conversion viewport → px timeline ---
@@ -406,6 +420,28 @@ export default function Timeline() {
       if (shouldIgnoreShortcut(e)) return;
 
       const mod = e.ctrlKey || e.metaKey;
+      if (mod && e.altKey) {
+        // Copier / coller les propriétés d'un clip (volume, vitesse, fondus,
+        // transformation, police) sans toucher aux positions.
+        const key = e.key.toLowerCase();
+        if (key === 'c') {
+          e.preventDefault();
+          const source = clips.find(c => selectedClipIdSet.has(c.id));
+          if (!source) return;
+          styleClipboardRef.current = copyClipStyle(source);
+          toast({ message: 'Propriétés copiées', type: 'success', durationMs: 1500 });
+          return;
+        }
+        if (key === 'v') {
+          e.preventDefault();
+          const style = styleClipboardRef.current;
+          if (!style || selectedClipIds.length === 0) return;
+          setClips(prev => prev.map(c => selectedClipIdSet.has(c.id) ? applyClipStyle(c, style) : c));
+          toast({ message: 'Propriétés appliquées', type: 'success', durationMs: 1500 });
+          return;
+        }
+        return;
+      }
       if (mod && !e.altKey) {
         const key = e.key.toLowerCase();
         if (key === 'b') {
@@ -612,6 +648,42 @@ export default function Timeline() {
     target.addEventListener('pointercancel', onUp);
   };
 
+  // --- DÉFILEMENT AUTOMATIQUE PENDANT UN GESTE ---
+  // Tant qu'un geste est actif, si le pointeur entre dans la zone de bord de la
+  // fenêtre visible, on fait défiler la timeline image par image. Le geste
+  // rejoue son onMove à chaque pas pour que le clip suive le défilement.
+  const startEdgeAutoScroll = useCallback((onStep: (clientX: number, clientY: number) => void) => {
+    let raf = 0;
+    let last: { x: number; y: number } | null = null;
+
+    const step = () => {
+      raf = requestAnimationFrame(step);
+      const el = timelineRef.current;
+      if (!el || !last) return;
+      const rect = el.getBoundingClientRect();
+      const leftEdge = rect.left + TRACK_HEADER_W;
+      let dx = 0;
+      if (last.x < leftEdge + EDGE_SCROLL_ZONE_PX) {
+        dx = -((leftEdge + EDGE_SCROLL_ZONE_PX - last.x) / EDGE_SCROLL_ZONE_PX);
+      } else if (last.x > rect.right - EDGE_SCROLL_ZONE_PX) {
+        dx = (last.x - (rect.right - EDGE_SCROLL_ZONE_PX)) / EDGE_SCROLL_ZONE_PX;
+      }
+      if (dx === 0) return;
+      const amount = clamp(dx, -1, 1) * EDGE_SCROLL_MAX_PX_PER_FRAME;
+      const before = el.scrollLeft;
+      autoScrollingRef.current = true;
+      el.scrollLeft = Math.max(0, before + amount);
+      autoScrollingRef.current = false;
+      if (el.scrollLeft !== before) onStep(last.x, last.y);
+    };
+    raf = requestAnimationFrame(step);
+
+    return {
+      track: (x: number, y: number) => { last = { x, y }; },
+      stop: () => { cancelAnimationFrame(raf); last = null; },
+    };
+  }, []);
+
   // Rects des lignes de piste, mesurés au pointerdown (déplacement vertical)
   const measureTrackRects = (): TrackRect[] => {
     const el = timelineRef.current;
@@ -668,8 +740,12 @@ export default function Timeline() {
     const grabEnd = clip.start + clip.width;
     const grabOffsetPx = timeFromClientX(e.clientX) - grabStart;
     const trackRects = measureTrackRects();
-    const wantedType = clip.type === 'audio' ? 'audio' : 'video';
-    const canMoveVertically = moving.length === 1 && clip.type !== 'text';
+    // Ordre d'affichage des pistes pour le déplacement vertical (groupe compris)
+    const trackOrderList = trackRects.map(r => ({ id: r.id, type: r.type, locked: r.locked }));
+    const rowIndexById = new Map(trackOrderList.map((t, i) => [t.id, i]));
+    const movingClips = moving.flatMap(id => { const c = byId.get(id); return c ? [c] : []; });
+    const canMoveVertically = movingClips.every(c => c.type !== 'text');
+    const grabRowIndex = rowIndexById.get(clip.track) ?? -1;
     const isTouch = e.pointerType === 'touch';
     const snapPx = isTouch ? SNAP_THRESHOLD_TOUCH_PX : SNAP_THRESHOLD_PX;
     const moveThreshold = isTouch ? MOVE_THRESHOLD_TOUCH_PX : MOVE_THRESHOLD_PX;
@@ -677,22 +753,19 @@ export default function Timeline() {
     let moved = false;
     let lastDelta = 0;
     let lastTrack = clip.track;
+    let lastShift: Map<string, number> = EMPTY_TRACK_SHIFT;
     const startX = e.clientX;
     const startY = e.clientY;
 
-    const onMove = (moveEvent: PointerEvent) => {
-      if (moveEvent.pointerId !== e.pointerId) return;
-      if (!moved) {
-        const dx = Math.abs(moveEvent.clientX - startX);
-        const dy = Math.abs(moveEvent.clientY - startY);
-        if (dx < moveThreshold && dy < moveThreshold) return; // évite le drag accidentel sur tap
-        moved = true;
-      }
+    // Applique le geste pour une position de pointeur donnée. Rejoué tel quel
+    // par l'auto-défilement de bord (la position écran ne bouge pas, mais le
+    // scroll change la position timeline correspondante).
+    const apply = (clientX: number, clientY: number, snapOff: boolean) => {
       const zoom = zoomLevelRef.current;
-      const rawDelta = timeFromClientX(moveEvent.clientX) - grabOffsetPx - grabStart;
+      const rawDelta = timeFromClientX(clientX) - grabOffsetPx - grabStart;
       // Borne 0 sur le clip le plus à gauche du groupe
       let delta = Math.max(rawDelta, -minInitial);
-      const snapOn = snapEnabledRef.current !== (moveEvent.ctrlKey || moveEvent.metaKey);
+      const snapOn = snapEnabledRef.current !== snapOff;
 
       // Aimante le bord le plus proche du clip saisi (début ou fin), jamais sur
       // les clips de la sélection
@@ -715,14 +788,17 @@ export default function Timeline() {
         guide = null;
       }
 
-      // Vertical : clip seul, piste existante du même type, non verrouillée
-      let targetTrack = initial.get(clip.id)?.track ?? clip.track;
-      if (canMoveVertically) {
-        const row = trackRects.find(r => moveEvent.clientY >= r.top && moveEvent.clientY < r.bottom);
-        if (row && row.type === wantedType && !row.locked) targetTrack = row.id;
+      // Vertical : tout le groupe se décale du même nombre de rangées, ou rien
+      let trackShift: Map<string, number> = EMPTY_TRACK_SHIFT;
+      if (canMoveVertically && grabRowIndex >= 0) {
+        const row = trackRects.findIndex(r => clientY >= r.top && clientY < r.bottom);
+        if (row >= 0 && row !== grabRowIndex) {
+          trackShift = groupTrackShift(movingClips, trackOrderList, row - grabRowIndex) ?? EMPTY_TRACK_SHIFT;
+        }
       }
       lastDelta = delta;
-      lastTrack = targetTrack;
+      lastShift = trackShift;
+      lastTrack = trackShift.get(clip.id) ?? clip.track;
 
       setSnapGuideX(guide !== null ? guide * zoom : null);
       setGestureLabel({ x: (grabStart + delta) * zoom, text: formatTimecode(grabStart + delta, fps) });
@@ -730,11 +806,26 @@ export default function Timeline() {
       setClips(prev => prev.map(c => {
         const init = initial.get(c.id);
         if (!init) return c;
-        return { ...c, start: init.start + delta, track: c.id === clip.id ? targetTrack : init.track };
+        return { ...c, start: init.start + delta, track: trackShift.get(c.id) ?? init.track };
       }));
+    };
+
+    const autoScroll = startEdgeAutoScroll((x, y) => apply(x, y, false));
+
+    const onMove = (moveEvent: PointerEvent) => {
+      if (moveEvent.pointerId !== e.pointerId) return;
+      if (!moved) {
+        const dx = Math.abs(moveEvent.clientX - startX);
+        const dy = Math.abs(moveEvent.clientY - startY);
+        if (dx < moveThreshold && dy < moveThreshold) return; // évite le drag accidentel sur tap
+        moved = true;
+      }
+      autoScroll.track(moveEvent.clientX, moveEvent.clientY);
+      apply(moveEvent.clientX, moveEvent.clientY, moveEvent.ctrlKey || moveEvent.metaKey);
     };
     const onUp = (upEvent: PointerEvent) => {
       if (upEvent.pointerId !== e.pointerId) return;
+      autoScroll.stop();
       gestureActiveRef.current = false;
       if (moved && lastDelta === 0 && lastTrack === clip.track) {
         // Bougé puis ramené au point de départ : pas d'entrée fantôme
@@ -743,14 +834,18 @@ export default function Timeline() {
         // Refus de dépôt si un clip déplacé chevauche un clip hors sélection :
         // le geste est annulé sans entrée fantôme dans l'historique.
         const current = getClips();
-        const conflict = moving.some(id => {
+        const placed = moving.flatMap(id => {
           const init = initial.get(id);
           const c = byId.get(id);
-          if (!init || !c) return false;
-          const movedClip: Clip = { ...c, start: init.start + lastDelta, track: id === clip.id ? lastTrack : init.track };
-          return overlapsOnTrack(current, movedClip, movingSet);
+          if (!init || !c) return [];
+          return [{ ...c, start: init.start + lastDelta, track: lastShift.get(id) ?? init.track }];
         });
-        if (conflict) {
+        const conflict = placed.some(c => overlapsOnTrack(current, c, movingSet));
+        if (conflict && insertModeRef.current) {
+          // Mode insertion : les clips gênants reculent au lieu de refuser le dépôt
+          setClips(prev => insertRipple(prev, placed, movingSet));
+          endHistoryGesture();
+        } else if (conflict) {
           cancelHistoryGesture();
           toast({ message: OCCUPIED_MESSAGE, type: 'warning' });
         } else {
@@ -814,6 +909,62 @@ export default function Timeline() {
     return inRows && !onClip && !onHeader;
   };
 
+  // --- RECTANGLE DE SÉLECTION (Maj + glisser dans le vide) ---
+  // Sélectionne tous les clips non verrouillés dont la boîte croise le
+  // rectangle ; l'auto-défilement de bord permet d'aller au-delà du visible.
+  const startMarquee = (e: ReactPointerEvent<HTMLDivElement>) => {
+    const el = timelineRef.current;
+    if (!el) return;
+    const origin = { x: e.clientX, y: e.clientY };
+    let originTime = timeFromClientX(e.clientX);
+
+    const apply = (clientX: number, clientY: number) => {
+      const rect = el.getBoundingClientRect();
+      const left = Math.min(origin.x, clientX) - rect.left;
+      const width = Math.abs(clientX - origin.x);
+      const top = Math.min(origin.y, clientY) - rect.top;
+      const height = Math.abs(clientY - origin.y);
+      setMarquee({ left, top, width, height });
+
+      // Sélection : intervalle de temps × pistes traversées (rects mesurés vifs)
+      const time = timeFromClientX(clientX);
+      const fromTime = Math.min(originTime, time);
+      const toTime = Math.max(originTime, time);
+      const yLo = Math.min(origin.y, clientY);
+      const yHi = Math.max(origin.y, clientY);
+      const rows = measureTrackRects().filter(r => r.bottom > yLo && r.top < yHi && !r.locked);
+      const rowIds = new Set(rows.map(r => r.id));
+      const hits = getClips()
+        .filter(c => rowIds.has(c.track) && c.start < toTime && fromTime < c.start + c.width)
+        .map(c => c.id);
+      selectClips(hits);
+    };
+
+    const autoScroll = startEdgeAutoScroll((x, y) => {
+      // Le scroll déplace l'origine en temps : on la corrige pour que le
+      // rectangle continue de couvrir la zone parcourue.
+      originTime = Math.min(originTime, timeFromClientX(origin.x));
+      apply(x, y);
+    });
+
+    const onMove = (ev: PointerEvent) => {
+      if (ev.pointerId !== e.pointerId) return;
+      autoScroll.track(ev.clientX, ev.clientY);
+      apply(ev.clientX, ev.clientY);
+    };
+    const onUp = (ev: PointerEvent) => {
+      if (ev.pointerId !== e.pointerId) return;
+      autoScroll.stop();
+      setMarquee(null);
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      window.removeEventListener('pointercancel', onUp);
+    };
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+    window.addEventListener('pointercancel', onUp);
+  };
+
   // --- PAN HORIZONTAL (drag dans la zone des pistes, sous la règle) ---
   const handlePanPointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
     if (e.button !== 0) return;
@@ -824,6 +975,14 @@ export default function Timeline() {
     // Outil texte : on garde le comportement de création au clic
     if (activeTool === 'text') {
       if (emptyArea) handleAddTextClip(e.clientX);
+      return;
+    }
+
+    // Maj + glisser dans le vide = rectangle de sélection (le glisser simple
+    // reste le panoramique). Souris et stylet seulement.
+    if (emptyArea && e.shiftKey && e.pointerType !== 'touch') {
+      e.preventDefault();
+      startMarquee(e);
       return;
     }
 
@@ -1115,6 +1274,8 @@ export default function Timeline() {
         onSplit={splitAtPlayhead}
         multiSelectMode={multiSelectMode}
         onToggleMulti={() => setMultiSelectMode(v => !v)}
+        insertMode={insertMode}
+        onToggleInsert={() => setInsertMode(v => !v)}
       />
       <div
         ref={timelineRef}
@@ -1126,6 +1287,20 @@ export default function Timeline() {
         onScroll={handleScroll}
         onContextMenu={(e) => e.preventDefault()}
       >
+        {/* Rectangle de sélection (Maj + glisser) */}
+        {marquee && (
+          <div
+            className="fixed z-50 pointer-events-none border border-cyan-400 bg-cyan-400/10 rounded-sm"
+            style={{
+              left: (timelineRef.current?.getBoundingClientRect().left ?? 0) + marquee.left,
+              top: (timelineRef.current?.getBoundingClientRect().top ?? 0) + marquee.top,
+              width: marquee.width,
+              height: marquee.height,
+            }}
+            aria-hidden="true"
+            data-marquee
+          />
+        )}
         {/* RÈGLE — clic ici déplace la tête de lecture */}
         <div
           className="h-6 bg-gray-950 sticky top-0 border-b border-gray-800 z-30 cursor-ew-resize"

@@ -373,3 +373,106 @@ export function flattenClips(
   }
   return out;
 }
+
+// --- MODE INSERTION (aimanté) ---
+// Au lieu de refuser un dépôt qui chevauche, pousse vers la droite les clips
+// de la même piste qui gênent. Renvoie les clips non déplacés de la scène,
+// mis à jour ; les clips déplacés (ids dans `movingIds`) ne sont pas touchés.
+export function insertRipple(clips: Clip[], moved: Clip[], movingIds: ReadonlySet<string>): Clip[] {
+  // Par piste d'arrivée : le décalage nécessaire est calculé sur les clips
+  // fixes qui chevauchent l'un des clips déplacés.
+  const pushByTrack = new Map<number, number>();
+  for (const m of moved) {
+    for (const c of clips) {
+      if (movingIds.has(c.id) || c.track !== m.track) continue;
+      if (clipEnd(c) <= m.start || c.start >= clipEnd(m)) continue;
+      const push = clipEnd(m) - c.start;
+      // Le décalage retenu par piste est le plus grand nécessaire
+      if (push > (pushByTrack.get(c.track) ?? 0)) pushByTrack.set(c.track, push);
+    }
+  }
+  if (pushByTrack.size === 0) return clips;
+  // Tout clip fixe qui commence après (ou dans) la zone d'insertion recule.
+  const fromByTrack = new Map<number, number>();
+  for (const m of moved) {
+    const cur = fromByTrack.get(m.track);
+    if (cur === undefined || m.start < cur) fromByTrack.set(m.track, m.start);
+  }
+  return clips.map(c => {
+    if (movingIds.has(c.id)) return c;
+    const push = pushByTrack.get(c.track);
+    const from = fromByTrack.get(c.track);
+    if (push === undefined || from === undefined) return c;
+    return clipEnd(c) > from ? { ...c, start: c.start + push } : c;
+  });
+}
+
+// --- DÉPLACEMENT VERTICAL D'UN GROUPE ---
+// `order` = pistes candidates dans l'ordre d'affichage. Décale chaque clip de
+// `delta` rangées ; renvoie null si une cible manque, n'a pas le bon type ou
+// est verrouillée (le groupe se déplace d'un bloc ou pas du tout).
+export function groupTrackShift(
+  clips: Clip[],
+  order: { id: number; type: string; locked?: boolean }[],
+  delta: number
+): Map<string, number> | null {
+  if (delta === 0) return new Map();
+  const index = new Map(order.map((t, i) => [t.id, i]));
+  const result = new Map<string, number>();
+  for (const c of clips) {
+    if (c.type === 'text') return null;
+    const i = index.get(c.track);
+    if (i === undefined) return null;
+    const target = order[i + delta];
+    if (!target || target.locked) return null;
+    const wanted = c.type === 'audio' ? 'audio' : 'video';
+    if (target.type !== wanted) return null;
+    result.set(c.id, target.id);
+  }
+  return result;
+}
+
+// --- COPIER/COLLER LES PROPRIÉTÉS D'UN CLIP ---
+export interface ClipStyle {
+  volume?: number;
+  muted?: boolean;
+  speed?: number;
+  fadeIn?: number;
+  fadeOut?: number;
+  transition?: Clip['transition'];
+  transform?: Clip['transform'];
+  fontSize?: number;
+  fontFamily?: string;
+  textColor?: string;
+}
+
+export function copyClipStyle(clip: Clip): ClipStyle {
+  const { volume, muted, speed, fadeIn, fadeOut, transition, transform, fontSize, fontFamily, textColor } = clip;
+  return { volume, muted, speed, fadeIn, fadeOut, transition, transform, fontSize, fontFamily, textColor };
+}
+
+// Le style est appliqué champ par champ : un clip texte ne reçoit pas de
+// vitesse, un clip audio pas de transformation géométrique.
+export function applyClipStyle(clip: Clip, style: ClipStyle): Clip {
+  const next: Clip = { ...clip };
+  const isAudio = clip.type === 'audio';
+  const isText = clip.type === 'text';
+  const hasMedia = clip.type === 'video' || isAudio;
+  if (hasMedia) {
+    next.volume = style.volume;
+    next.muted = style.muted;
+    next.speed = style.speed;
+    next.fadeIn = style.fadeIn;
+    next.fadeOut = style.fadeOut;
+  }
+  if (!isAudio) {
+    next.transition = style.transition;
+    next.transform = style.transform ? { ...style.transform } : undefined;
+  }
+  if (isText) {
+    next.fontSize = style.fontSize;
+    next.fontFamily = style.fontFamily;
+    next.textColor = style.textColor;
+  }
+  return next;
+}

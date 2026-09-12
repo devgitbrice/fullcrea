@@ -3,7 +3,7 @@
 import { shouldIgnoreShortcut } from '@/lib/keyboard';
 import { useEffect, useState } from 'react';
 import {
-  Copy, FoldHorizontal, ListChecks, Magnet, MousePointer2, Network, Redo2, Scissors, SquareSplitHorizontal, Trash2, Type, Undo2,
+  Copy, FoldHorizontal, ListChecks, Magnet, BetweenHorizonalStart, MousePointer2, Network, Redo2, Scissors, SquareSplitHorizontal, Trash2, Type, Undo2,
   type LucideIcon,
 } from 'lucide-react';
 import { useProject, type ToolMode } from '@/components/ProjectContext';
@@ -70,10 +70,13 @@ interface TimelineToolbarProps {
   onSplit: () => void;
   multiSelectMode: boolean;
   onToggleMulti: () => void;
+  insertMode: boolean;
+  onToggleInsert: () => void;
 }
 
 export default function TimelineToolbar({
   onDeleteClips, onRippleDeleteClips, onSplit, multiSelectMode, onToggleMulti,
+  insertMode, onToggleInsert,
 }: TimelineToolbarProps) {
   const {
     activeTool,
@@ -183,6 +186,15 @@ export default function TimelineToolbar({
         aria-pressed={multiSelectMode}
       >
         <ListChecks size={18} />
+      </button>
+      <button
+        onClick={onToggleInsert}
+        className={toggleButtonClass(insertMode)}
+        title="Mode insertion : un dépôt qui chevauche pousse les clips suivants"
+        aria-label="Mode insertion"
+        aria-pressed={insertMode}
+      >
+        <BetweenHorizonalStart size={18} />
       </button>
       <button
         onClick={() => setSnapEnabled(!snapEnabled)}
