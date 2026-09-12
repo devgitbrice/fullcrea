@@ -45,6 +45,7 @@ export async function fetchAllProjects(supabase: SupabaseClient, userId: string)
       .map((t: {
         track_index: number; type: 'video' | 'audio' | 'text'; name: string; kind?: Track['kind'] | null;
         muted?: boolean | null; hidden?: boolean | null; locked?: boolean | null; sequence_id?: string | null;
+        solo?: boolean | null; height_px?: number | null; collapsed?: boolean | null;
       }) => ({
         sequenceId: t.sequence_id ?? MAIN_SEQUENCE_ID,
         track: {
@@ -55,6 +56,9 @@ export async function fetchAllProjects(supabase: SupabaseClient, userId: string)
           hidden: t.hidden || undefined,
           locked: t.locked || undefined,
           kind: t.kind ?? undefined,
+          solo: t.solo || undefined,
+          height: t.height_px ?? undefined,
+          collapsed: t.collapsed || undefined,
         } as Track,
       }));
     const assets: Asset[] = (assetsRes.data ?? [])
@@ -75,6 +79,8 @@ export async function fetchAllProjects(supabase: SupabaseClient, userId: string)
         offset_px?: number | null; source_duration_px?: number | null;
         volume?: number | null; muted?: boolean | null;
         tts?: Clip['tts'] | null;
+        speed?: number | null; fade_in_px?: number | null; fade_out_px?: number | null;
+        transition?: Clip['transition'] | null; link_id?: string | null;
         transform: Clip['transform'] | null;
         text_content: string | null; font_size: number | null;
         font_family: string | null; text_color: string | null;
@@ -94,6 +100,11 @@ export async function fetchAllProjects(supabase: SupabaseClient, userId: string)
         tts: c.tts ?? undefined,
         volume: c.volume ?? undefined,
         muted: c.muted || undefined,
+        speed: c.speed ?? undefined,
+        fadeIn: c.fade_in_px ?? undefined,
+        fadeOut: c.fade_out_px ?? undefined,
+        transition: c.transition ?? undefined,
+        linkId: c.link_id ?? undefined,
         transform: c.transform ?? undefined,
         text: c.text_content ?? undefined,
         fontSize: c.font_size ?? undefined,
@@ -105,7 +116,7 @@ export async function fetchAllProjects(supabase: SupabaseClient, userId: string)
     // Métadonnées des timelines : colonne `sequences` (id, name, markers).
     // Projet antérieur : une seule timeline, celle qui porte tout le contenu.
     const storedSequences = Array.isArray(p.sequences) && p.sequences.length > 0
-      ? (p.sequences as { id: string; name: string; markers?: Marker[] }[])
+      ? (p.sequences as { id: string; name: string; markers?: Marker[]; workArea?: Sequence['workArea'] }[])
       : [{ id: MAIN_SEQUENCE_ID, name: 'Timeline 1', markers: Array.isArray(p.markers) ? (p.markers as Marker[]) : [] }];
 
     const sequences: Sequence[] = storedSequences.map((meta) => ({
@@ -114,6 +125,7 @@ export async function fetchAllProjects(supabase: SupabaseClient, userId: string)
       tracks: trackRows.filter((t) => t.sequenceId === meta.id).map((t) => t.track),
       clips: clipRows.filter((c) => c.sequenceId === meta.id).map((c) => c.clip),
       markers: Array.isArray(meta.markers) && meta.markers.length > 0 ? meta.markers : EMPTY_MARKERS,
+      workArea: meta.workArea ?? null,
     }));
 
     const activeId = sequences.some((x) => x.id === p.active_sequence_id)
@@ -154,7 +166,9 @@ export async function upsertProject(
     current_view: p.currentView,
     markers: p.markers,
     // Métadonnées des timelines ; leur contenu vit dans tracks/clips (sequence_id)
-    sequences: p.sequences.map((seq) => ({ id: seq.id, name: seq.name, markers: seq.markers })),
+    sequences: p.sequences.map((seq) => ({
+      id: seq.id, name: seq.name, markers: seq.markers, workArea: seq.workArea ?? null,
+    })),
     active_sequence_id: p.activeSequenceId,
   });
   if (pErr) throw pgError('Écriture fullcrea_projects échouée', pErr);
@@ -188,6 +202,9 @@ export async function upsertProject(
         hidden: !!t.hidden,
         locked: !!t.locked,
         kind: t.kind ?? null,
+        solo: !!t.solo,
+        height_px: t.height ?? null,
+        collapsed: !!t.collapsed,
       }))
     );
     if (tErr) throw pgError('Écriture fullcrea_tracks échouée', tErr);
@@ -222,6 +239,11 @@ export async function upsertProject(
         volume: c.volume ?? null,
         muted: !!c.muted,
         tts: c.tts ?? null,
+        speed: c.speed ?? null,
+        fade_in_px: c.fadeIn ?? null,
+        fade_out_px: c.fadeOut ?? null,
+        transition: c.transition ?? null,
+        link_id: c.linkId ?? null,
         transform: c.transform ?? null,
         text_content: c.text ?? null,
         font_size: c.fontSize ?? null,

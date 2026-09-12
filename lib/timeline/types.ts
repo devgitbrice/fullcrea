@@ -30,6 +30,14 @@ export interface Clip {
   sourceDuration?: number;  // px : durée réelle du média si connue (probe) ; offset + width ≤ sourceDuration
   volume?: number;          // 0..1, défaut 1 (vidéo/audio)
   muted?: boolean;          // vidéo/audio
+  speed?: number;           // vitesse de lecture, 0.25..4, défaut 1 (vidéo/audio)
+  fadeIn?: number;          // px : fondu audio d'entrée
+  fadeOut?: number;         // px : fondu audio de sortie
+  // Transition à l'entrée du clip : recouvre la fin du clip précédent de la
+  // même piste (fondu enchaîné). Durée en px.
+  transition?: { type: TransitionType; duration: number };
+  // Lien vidéo ↔ audio détaché : les deux clips portent le même identifiant
+  linkId?: string;
   transform?: ImageTransform;
   // Voix off générée : texte et voix d'origine, pour rééditer et régénérer
   tts?: { text: string; voice: string };
@@ -45,12 +53,27 @@ export interface Clip {
 // (enregistrement direct). Elles portent un bouton dédié dans leur en-tête.
 export type TrackKind = 'voiceover' | 'music' | 'mic';
 
+/** Transitions disponibles à l'entrée d'un clip visuel. */
+export type TransitionType = 'fade' | 'dissolve' | 'wipeleft' | 'wiperight' | 'slideup' | 'circleopen';
+
+export const TRANSITIONS: { id: TransitionType; label: string }[] = [
+  { id: 'dissolve', label: 'Fondu enchaîné' },
+  { id: 'fade', label: 'Fondu au noir' },
+  { id: 'wipeleft', label: 'Balayage ←' },
+  { id: 'wiperight', label: 'Balayage →' },
+  { id: 'slideup', label: 'Glissement ↑' },
+  { id: 'circleopen', label: 'Cercle' },
+];
+
 export interface Track {
   id: number;
   type: 'video' | 'audio' | 'text';
   name: string;
   kind?: TrackKind;  // pistes audio seulement
   muted?: boolean;   // pistes vidéo et audio : son coupé (lecteur + export)
+  solo?: boolean;    // une piste en solo rend les autres inaudibles
+  height?: number;   // hauteur personnalisée (px écran)
+  collapsed?: boolean; // piste repliée (hauteur minimale)
   hidden?: boolean;  // pistes vidéo : clips ignorés (image ET son) ; jamais sur la piste texte
   locked?: boolean;  // toutes pistes : clips non sélectionnables/éditables ; dépôt refusé
 }
@@ -60,7 +83,11 @@ export interface Marker {
   id: string;
   time: number;
   label: string;
+  color?: string;
 }
+
+/** Zone de travail : lecture et export limités à cet intervalle (px). */
+export interface WorkArea { start: number; end: number }
 
 export interface Asset {
   id: string;
@@ -87,6 +114,8 @@ export interface Sequence {
   clips: Clip[];
   tracks: Track[];
   markers: Marker[];
+  /** Zone de travail (in/out) : null = toute la timeline */
+  workArea?: WorkArea | null;
 }
 
 export interface Project {

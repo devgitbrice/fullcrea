@@ -7,9 +7,13 @@ import {
 } from 'react';
 import { Play, Pause, SkipBack, SkipForward, StepBack, StepForward, Repeat, Music, AlertCircle } from 'lucide-react';
 import { useProject, Clip, Track, defaultImageTransform, PX_PER_SEC_BASE } from '@/components/ProjectContext';
-import { findActiveVisual, findActiveAudio, findActiveAudioOnTrack, mediaTimeSec } from '@/lib/timeline/clipOps';
+import {
+  findActiveVisual, findActiveAudio, findActiveAudioOnTrack, mediaTimeSec, clipSpeed, clipGain, audibleTrackIds,
+} from '@/lib/timeline/clipOps';
 import { formatTimecode } from '@/lib/timeline/format';
-import TextLayer from '@/components/TextLayer';
+import StageFrame from '@/components/StageFrame';
+import TextClips from '@/components/TextClips';
+import { visualTransformCss } from '@/lib/timeline/textLayout';
 
 // Clips et currentTime sont exprimés en px à zoom 1 (30 px = 1 s), indépendamment du zoom.
 const PX_PER_SEC = PX_PER_SEC_BASE;
@@ -43,6 +47,11 @@ function TrackAudio({ track, clips, isPlaying, currentTime, subscribeToTime }: {
       if (!el) return;
       const clip = findActiveAudioOnTrack(clips, track.id, time);
       if (clip && clip.src) {
+        // Gain continu : volume du clip atténué par ses fondus
+        const gain = track.muted ? 0 : clipGain(clip, time);
+        if (Math.abs(el.volume - gain) > 0.01) el.volume = Math.min(1, Math.max(0, gain));
+        const speed = clipSpeed(clip);
+        if (el.playbackRate !== speed) el.playbackRate = speed;
         if (isPlaying) {
           const target = mediaTimeSec(clip, time);
           const now = performance.now();
@@ -58,14 +67,14 @@ function TrackAudio({ track, clips, isPlaying, currentTime, subscribeToTime }: {
         lastClipRef.current = null;
       }
     });
-  }, [subscribeToTime, clips, track.id, isPlaying]);
+  }, [subscribeToTime, clips, track.id, isPlaying, track.muted]);
 
+  // Le volume est piloté image par image (fondus) ; ici seulement le muet
   useEffect(() => {
     const el = ref.current;
-    if (!el || !activeClip) return;
-    el.volume = Math.min(1, Math.max(0, activeClip.volume ?? 1));
-    el.muted = !!activeClip.muted || !!track.muted;
-  }, [activeClip?.id, activeClip?.volume, activeClip?.muted, track.muted]); // eslint-disable-line react-hooks/exhaustive-deps
+    if (!el) return;
+    el.muted = !!activeClip?.muted || !!track.muted;
+  }, [activeClip?.id, activeClip?.muted, track.muted]);
 
   useEffect(() => {
     if (!isPlaying) ref.current?.pause();
@@ -82,24 +91,6 @@ function TrackAudio({ track, clips, isPlaying, currentTime, subscribeToTime }: {
 
   // src="" planterait l'élément : undefined quand aucun clip n'est actif
   return <audio ref={ref} src={activeClip?.src || undefined} preload="auto" />;
-}
-
-// Position / échelle / rotation d'un clip visuel (image ou vidéo), réglées
-// dans le panneau de propriétés à droite de l'aperçu.
-function transformStyleOf(clip: Clip): CSSProperties {
-  const t = clip.transform || defaultImageTransform;
-  return {
-    transform: `
-      translate(${t.positionX}px, ${t.positionY}px)
-      rotateX(${t.rotationX}deg)
-      rotateY(${t.rotationY}deg)
-      rotateZ(${t.rotationZ || 0}deg)
-      scaleX(${t.scaleX})
-      scaleY(${t.scaleY})
-    `,
-    transformOrigin: 'center center',
-    transformStyle: 'preserve-3d',
-  };
 }
 
 const transportButtonClass =
@@ -142,7 +133,8 @@ export default function Player() {
   const isVideoMode = currentView === 'video';
 
   // Pistes audio lues (chacune a son <audio>) ; une piste muette ne joue rien
-  const audioTracks = useMemo(() => tracks.filter(t => t.type === 'audio' && !t.muted), [tracks]);
+  const audible = useMemo(() => audibleTrackIds(tracks), [tracks]);
+  const audioTracks = useMemo(() => tracks.filter(t => audible.has(t.id)), [tracks, audible]);
 
   // --- MOTEUR DE SYNCHRONISATION VIDÉO OPTIMISÉ ---
   // ✅ Ref pour suivre le dernier temps de sync (évite les resyncs trop fréquents)
@@ -157,6 +149,11 @@ export default function Player() {
       // Synchronisation VIDÉO
       const videoClip = findActiveVisual(clips, tracks, time);
       if (videoClip && videoRef.current) {
+        const el = videoRef.current;
+        const speed = clipSpeed(videoClip);
+        if (el.playbackRate !== speed) el.playbackRate = speed;
+        const gain = clipGain(videoClip, time);
+        if (Math.abs(el.volume - gain) > 0.01) el.volume = Math.min(1, Math.max(0, gain));
         const targetTime = mediaTimeSec(videoClip, time);
         const diff = Math.abs(videoRef.current.currentTime - targetTime);
 
@@ -186,10 +183,9 @@ export default function Player() {
   const videoTrackMuted = !!tracks.find(t => t.id === activeVideoClip?.track)?.muted;
   useEffect(() => {
     const el = videoRef.current;
-    if (!el || !activeVideoClip) return;
-    el.volume = Math.min(1, Math.max(0, activeVideoClip.volume ?? 1));
-    el.muted = !!activeVideoClip.muted || videoTrackMuted;
-  }, [activeVideoClip?.id, activeVideoClip?.volume, activeVideoClip?.muted, videoTrackMuted]);
+    if (!el) return;
+    el.muted = !!activeVideoClip?.muted || videoTrackMuted;
+  }, [activeVideoClip?.id, activeVideoClip?.muted, videoTrackMuted]);
 
   // Gérer pause/play
   useEffect(() => {
@@ -376,38 +372,37 @@ export default function Player() {
               }}
             >
 
-            {activeVideoClip ? (
-                <div className="w-full h-full relative bg-gray-800">
-                {activeVideoClip.src ? (
-                    activeVideoClip.type === 'video' ? (
-                    <video
-                        ref={videoRef}
-                        src={activeVideoClip.src}
-                        className="w-full h-full object-contain"
-                        playsInline
-                        preload="auto"
-                        style={{ ...transformStyleOf(activeVideoClip), willChange: 'transform' }}
-                    />
-                    ) : (
-                        <img
-                          src={activeVideoClip.src}
-                          alt={activeVideoClip.name}
-                          className="w-full h-full object-contain transition-transform duration-100"
-                          style={transformStyleOf(activeVideoClip)}
-                        />
-                    )
+            {/* Scène composée en pixels projet : visuel et textes partagent le
+                même cadre, donc la même géométrie qu'à l'export. */}
+            <StageFrame settings={projectSettings}>
+              {activeVideoClip?.src && (
+                activeVideoClip.type === 'video' ? (
+                  <video
+                    ref={videoRef}
+                    src={activeVideoClip.src}
+                    playsInline
+                    preload="auto"
+                    className="absolute inset-0 w-full h-full object-contain"
+                    style={{ transform: visualTransformCss(activeVideoClip), willChange: 'transform' }}
+                  />
                 ) : (
-                    <div className="absolute inset-0 flex flex-col items-center justify-center text-white z-10">
-                    <AlertCircle size={48} className="mb-4 text-red-500" />
-                    <p className="text-sm text-red-400">Source manquante</p>
-                    </div>
-                )}
+                  <img
+                    src={activeVideoClip.src}
+                    alt={activeVideoClip.name}
+                    className="absolute inset-0 w-full h-full object-contain"
+                    style={{ transform: visualTransformCss(activeVideoClip) }}
+                  />
+                )
+              )}
+              <TextClips texts={activeTextClips} />
+            </StageFrame>
 
+            {activeVideoClip && !activeVideoClip.src ? (
+                <div className="absolute inset-0 flex flex-col items-center justify-center text-white z-10">
+                  <AlertCircle size={48} className="mb-4 text-red-500" />
+                  <p className="text-sm text-red-400">Source manquante</p>
                 </div>
-            ) : activeTextClips.length > 0 ? (
-                /* Texte seul : fond noir, comme à l'export */
-                null
-            ) : (
+            ) : activeVideoClip || activeTextClips.length > 0 ? null : (
                 <div className="flex flex-col items-center gap-3 opacity-50">
                     {activeAudioClip ? (
                         <>
@@ -421,9 +416,6 @@ export default function Player() {
                     )}
                 </div>
             )}
-
-            {/* Calque texte : au-dessus de la scène, qu'il y ait une vidéo ou non */}
-            <TextLayer texts={activeTextClips} settings={projectSettings} />
 
             {/* Overlay REC */}
             {isPlaying && (

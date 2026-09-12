@@ -8,7 +8,9 @@
 --       la section 5 bis (migrations) ajoute les colonnes récentes
 --       (offset_px, source_duration_px, volume, muted, hidden, locked, markers,
 --       kind, tts, sequences, active_sequence_id, sequence_id, sequence_ref)
---       crée la table fullcrea_shares (partage par lien et intégration) et la
+--       ajoute les colonnes de montage (speed, fades, transition, link_id,
+--       solo, height_px, collapsed), crée la table fullcrea_shares (partage par
+--       lien et intégration) et la
 --       fonction fullcrea_share_payload (lecture publique d'un partage en direct).
 --       Sans elles, l'insert échoue « column … does not exist » et l'indicateur
 --       de sauvegarde passe en erreur.
@@ -185,6 +187,20 @@ CREATE INDEX IF NOT EXISTS idx_fullcrea_tracks_sequence
     ON fullcrea_tracks(project_id, sequence_id);
 CREATE INDEX IF NOT EXISTS idx_fullcrea_clips_sequence
     ON fullcrea_clips(project_id, sequence_id);
+
+-- Montage avancé : vitesse, fondus audio, transition d'entrée, lien vidéo/audio
+ALTER TABLE fullcrea_clips
+  ADD COLUMN IF NOT EXISTS speed        DOUBLE PRECISION CHECK (speed IS NULL OR (speed > 0 AND speed <= 8)),
+  ADD COLUMN IF NOT EXISTS fade_in_px   DOUBLE PRECISION CHECK (fade_in_px  IS NULL OR fade_in_px  >= 0),
+  ADD COLUMN IF NOT EXISTS fade_out_px  DOUBLE PRECISION CHECK (fade_out_px IS NULL OR fade_out_px >= 0),
+  ADD COLUMN IF NOT EXISTS transition   JSONB,
+  ADD COLUMN IF NOT EXISTS link_id      TEXT;
+
+-- Pistes : solo, hauteur personnalisée, repli
+ALTER TABLE fullcrea_tracks
+  ADD COLUMN IF NOT EXISTS solo      BOOLEAN NOT NULL DEFAULT false,
+  ADD COLUMN IF NOT EXISTS height_px INTEGER,
+  ADD COLUMN IF NOT EXISTS collapsed BOOLEAN NOT NULL DEFAULT false;
 
 
 -- =====================================================

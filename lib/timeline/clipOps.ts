@@ -17,8 +17,49 @@ export function newId(prefix: string): string {
 export const clipEnd = (c: Clip): number => c.start + c.width;
 
 /** Temps (s) dans la source correspondant à `timePx` sur la timeline. */
+/** Vitesse de lecture d'un clip, bornée (1 = normal). */
+export function clipSpeed(clip: Clip): number {
+  const raw = clip.speed ?? 1;
+  if (!Number.isFinite(raw) || raw <= 0) return 1;
+  return Math.min(MAX_SPEED, Math.max(MIN_SPEED, raw));
+}
+
+export const MIN_SPEED = 0.25;
+export const MAX_SPEED = 4;
+
+/**
+ * Temps (s) à lire dans la source pour la position timeline donnée.
+ * La vitesse étire ou comprime la source : un clip de largeur W à la vitesse v
+ * consomme W × v pixels de source.
+ */
 export function mediaTimeSec(clip: Clip, timePx: number): number {
-  return ((clip.offset ?? 0) + (timePx - clip.start)) / PX_PER_SEC_BASE;
+  return ((clip.offset ?? 0) + (timePx - clip.start) * clipSpeed(clip)) / PX_PER_SEC_BASE;
+}
+
+/** Portion de source consommée par le clip (px source). */
+export function sourceSpanPx(clip: Clip): number {
+  return clip.width * clipSpeed(clip);
+}
+
+/**
+ * Gain audio à une position donnée : volume du clip, atténué par les fondus
+ * d'entrée et de sortie. Même formule dans le lecteur et à l'export.
+ */
+export function clipGain(clip: Clip, timePx: number): number {
+  const volume = Math.min(1, Math.max(0, clip.volume ?? 1));
+  if (clip.muted) return 0;
+  let gain = volume;
+  const fadeIn = Math.max(0, clip.fadeIn ?? 0);
+  const fadeOut = Math.max(0, clip.fadeOut ?? 0);
+  if (fadeIn > 0) {
+    const t = (timePx - clip.start) / fadeIn;
+    gain *= Math.min(1, Math.max(0, t));
+  }
+  if (fadeOut > 0) {
+    const t = (clipEnd(clip) - timePx) / fadeOut;
+    gain *= Math.min(1, Math.max(0, t));
+  }
+  return gain;
 }
 
 const hasOffset = (c: Clip): boolean => c.type === 'video' || c.type === 'audio';
@@ -33,7 +74,13 @@ export function splitClip(clip: Clip, timePx: number, ids: [string, string]): [C
   if (timePx - clip.start < MIN_CLIP_WIDTH_PX || end - timePx < MIN_CLIP_WIDTH_PX) return null;
   const left: Clip = { ...clip, id: ids[0], width: timePx - clip.start };
   const right: Clip = { ...clip, id: ids[1], start: timePx, width: end - timePx };
-  if (hasOffset(clip)) right.offset = (clip.offset ?? 0) + (timePx - clip.start);
+  if (hasOffset(clip)) right.offset = (clip.offset ?? 0) + (timePx - clip.start) * clipSpeed(clip);
+  // Le fondu d'entrée reste à gauche, celui de sortie à droite ; chacun est
+  // borné par la nouvelle largeur.
+  if (clip.fadeIn) { left.fadeIn = Math.min(clip.fadeIn, left.width); delete right.fadeIn; }
+  if (clip.fadeOut) { right.fadeOut = Math.min(clip.fadeOut, right.width); delete left.fadeOut; }
+  // La transition d'entrée appartient à la moitié gauche
+  if (clip.transition) delete right.transition;
   if (clip.transform) {
     left.transform = { ...clip.transform };
     right.transform = { ...clip.transform };
@@ -143,11 +190,14 @@ export function trimBounds(clips: Clip[], clip: Clip): TrimBounds {
   const { prevEnd, nextStart } = neighborBounds(clips, clip);
   const offset = clip.offset ?? 0;
   const end = clipEnd(clip);
+  const speed = clipSpeed(clip);
+  // La source est consommée à la vitesse du clip : une seconde de source
+  // occupe 1/v seconde sur la timeline.
   const sourceEnd = hasOffset(clip) && clip.sourceDuration != null
-    ? clip.start - offset + clip.sourceDuration
+    ? clip.start + (clip.sourceDuration - offset) / speed
     : Infinity;
   return {
-    minStart: hasOffset(clip) ? Math.max(clip.start - offset, prevEnd) : prevEnd,
+    minStart: hasOffset(clip) ? Math.max(clip.start - offset / speed, prevEnd) : prevEnd,
     maxStart: end - MIN_CLIP_WIDTH_PX,
     minEnd: clip.start + MIN_CLIP_WIDTH_PX,
     maxEnd: Math.min(sourceEnd, nextStart),
@@ -212,9 +262,20 @@ export function findActiveVisual(clips: Clip[], tracks: Track[], timePx: number)
 }
 
 /** Clip audio audible à `timePx` (pistes audio non muettes, clip non muet, couche du dessus). */
+/**
+ * Pistes audio audibles : si au moins une piste est en solo, seules les pistes
+ * en solo s'entendent ; sinon toutes sauf les muettes.
+ */
+export function audibleTrackIds(tracks: Track[]): Set<number> {
+  const audio = tracks.filter(t => t.type === 'audio');
+  const soloed = audio.filter(t => t.solo && !t.muted);
+  const kept = soloed.length > 0 ? soloed : audio.filter(t => !t.muted);
+  return new Set(kept.map(t => t.id));
+}
+
 export function findActiveAudio(clips: Clip[], tracks: Track[], timePx: number): Clip | null {
   const order = trackOrder(tracks);
-  const audibleTracks = new Set(tracks.filter(t => t.type === 'audio' && !t.muted).map(t => t.id));
+  const audibleTracks = audibleTrackIds(tracks);
   const candidates = clips.filter(c =>
     c.type === 'audio' && !c.muted && audibleTracks.has(c.track) && coversTime(c, timePx)
   );

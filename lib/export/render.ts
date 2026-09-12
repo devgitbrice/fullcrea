@@ -3,6 +3,8 @@
 import { fetchFile } from '@ffmpeg/util';
 import { getFFmpeg } from './ffmpeg';
 import { renderTextOverlayPng } from './textOverlay';
+import { clipGain, clipSpeed } from '@/lib/timeline/clipOps';
+import { textTransform } from '@/lib/timeline/textLayout';
 import type { Clip, Track } from '@/lib/timeline/types';
 import { buildVideoSegments, exportableAudioClips } from '@/lib/timeline/segments';
 
@@ -77,6 +79,35 @@ export async function renderProjectToMp4({
 
   const trackById = new Map(tracks.map((t) => [t.id, t]));
   const scaleFilter = `scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:black,fps=${fps}`;
+
+  // Échelle pixels projet → pixels de sortie (les positions du montage sont
+  // exprimées dans les pixels du projet, comme dans l'aperçu).
+  const k = width / (projectWidth ?? width);
+
+  /**
+   * Chaîne vidéo d'un clip : mise au format de sortie, puis position, rotation
+   * et échelle du clip — mêmes valeurs que l'aperçu. Renvoie null quand la
+   * transformation est neutre (on garde alors la chaîne simple).
+   */
+  const transformFilter = (clip: Clip): string | null => {
+    const t = textTransform(clip);
+    const neutral = t.scaleX === 1 && t.scaleY === 1 && !t.rotationZ && !t.positionX && !t.positionY;
+    if (neutral) return null;
+    const parts = [scaleFilter];
+    if (t.scaleX !== 1 || t.scaleY !== 1) {
+      parts.push(`scale=iw*${t.scaleX.toFixed(4)}:ih*${t.scaleY.toFixed(4)}`);
+    }
+    if (t.rotationZ) {
+      const rad = ((t.rotationZ * Math.PI) / 180).toFixed(6);
+      parts.push('format=rgba');
+      parts.push(`rotate=${rad}:c=none:ow=rotw(${rad}):oh=roth(${rad})`);
+    }
+    const tx = Math.round(t.positionX * k);
+    const ty = Math.round(t.positionY * k);
+    // Recomposition sur un fond noir à la taille de sortie
+    return `${parts.join(',')}[tr];color=c=black:s=${width}x${height}:r=${fps}[cv];`
+      + `[cv][tr]overlay=x=(W-w)/2${tx >= 0 ? '+' : ''}${tx}:y=(H-h)/2${ty >= 0 ? '+' : ''}${ty}:shortest=1`;
+  };
   const encodeArgs = ['-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-preset', 'ultrafast', '-c:a', 'aac', '-ar', '44100', '-ac', '2'];
 
   // Une source utilisée par plusieurs segments (A/B/A) n'est écrite qu'une fois
@@ -102,6 +133,27 @@ export async function renderProjectToMp4({
     return name;
   };
   const overlayChain = (source: string) => `${source}[2:v]overlay=0:0:eof_action=repeat[v]`;
+
+  /**
+   * Fondus audio d'un clip, ramenés au repère du segment courant : le segment
+   * démarre au milieu du clip, les rampes sont donc décalées d'autant.
+   */
+  const audioFades = (clip: Clip, seg: { startSec: number; durationSec: number }): string[] => {
+    const out: string[] = [];
+    const clipStartSec = clip.start / pixelsPerSecond;
+    const fadeIn = (clip.fadeIn ?? 0) / pixelsPerSecond;
+    const fadeOut = (clip.fadeOut ?? 0) / pixelsPerSecond;
+    const clipEndSec = (clip.start + clip.width) / pixelsPerSecond;
+    if (fadeIn > 0) {
+      const st = clipStartSec - seg.startSec;
+      if (st + fadeIn > 0) out.push(`afade=t=in:st=${fmt(Math.max(0, st))}:d=${fmt(fadeIn)}`);
+    }
+    if (fadeOut > 0) {
+      const st = clipEndSec - fadeOut - seg.startSec;
+      if (st < seg.durationSec) out.push(`afade=t=out:st=${fmt(Math.max(0, st))}:d=${fmt(fadeOut)}`);
+    }
+    return out;
+  };
 
   report('Préparation des clips…', 0);
   const segmentNames: string[] = [];
@@ -140,9 +192,13 @@ export async function renderProjectToMp4({
         '-loop', '1', '-t', d, '-i', inputName,
         '-f', 'lavfi', '-t', d, '-i', 'anullsrc=r=44100:cl=stereo',
         ...textInput,
-        ...(textPng
-          ? ['-filter_complex', `[0:v]${scaleFilter}[bg];${overlayChain('[bg]')}`, '-map', '[v]', '-map', '1:a:0']
-          : ['-vf', scaleFilter]),
+        ...(() => {
+          const transform = transformFilter(clip);
+          const base = transform ?? scaleFilter;
+          if (textPng) return ['-filter_complex', `[0:v]${base}[bg];${overlayChain('[bg]')}`, '-map', '[v]', '-map', '1:a:0'];
+          if (transform) return ['-filter_complex', `[0:v]${transform}[v]`, '-map', '[v]', '-map', '1:a:0'];
+          return ['-vf', scaleFilter];
+        })(),
         ...encodeArgs,
         '-shortest',
         '-y',
@@ -153,7 +209,14 @@ export async function renderProjectToMp4({
       // silence) pour garantir un flux audio même si la source n'en a pas.
       const inputName = await inputFor(clip);
       const muted = !!clip.muted || !!trackById.get(clip.track)?.muted;
-      const videoChain = textPng ? `[0:v]${scaleFilter}[bg];${overlayChain('[bg]')}` : null;
+      const speed = clipSpeed(clip);
+      const transform = transformFilter(clip);
+      // setpts accélère ou ralentit l'image ; la source lue est plus longue
+      const speedFilter = speed !== 1 ? `setpts=PTS/${speed.toFixed(4)}` : null;
+      const base = [speedFilter, transform ?? scaleFilter].filter(Boolean).join(',');
+      const videoChain = textPng
+        ? `[0:v]${base}[bg];${overlayChain('[bg]')}`
+        : (transform || speedFilter ? `[0:v]${base}[v]` : null);
       const head = [
         '-ss', fmt(seg.inSec), '-i', inputName,
         '-f', 'lavfi', '-t', d, '-i', 'anullsrc=r=44100:cl=stereo',
@@ -172,8 +235,16 @@ export async function renderProjectToMp4({
       if (muted) {
         await ff.exec(silentArgs);
       } else {
+        // Vitesse : atempo est borné à [0.5, 2], on l'enchaîne si besoin
+        const tempo: string[] = [];
+        let remaining = speed;
+        while (remaining > 2.0001) { tempo.push('atempo=2'); remaining /= 2; }
+        while (remaining < 0.4999) { tempo.push('atempo=0.5'); remaining *= 2; }
+        if (Math.abs(remaining - 1) > 1e-4) tempo.push(`atempo=${remaining.toFixed(4)}`);
+        const fades = audioFades(clip, seg);
         const volume = Math.min(1, Math.max(0, clip.volume ?? 1)).toFixed(3);
-        const audioChain = `[0:a]volume=${volume}[va];[va][1:a]amix=inputs=2:duration=longest:normalize=0[a]`;
+        const audioChain = `[0:a]${[...tempo, `volume=${volume}`, ...fades].join(',')}[va];`
+          + `[va][1:a]amix=inputs=2:duration=longest:normalize=0[a]`;
         const code = await ff.exec([
           ...head,
           '-filter_complex', videoChain ? `${videoChain};${audioChain}` : audioChain,
@@ -218,11 +289,24 @@ export async function renderProjectToMp4({
       await ff.writeFile(inputName, await fetchBytes(clip.src));
       const startMs = Math.round((clip.start / pixelsPerSecond) * 1000);
       const volume = Math.min(1, Math.max(0, clip.volume ?? 1)).toFixed(3);
+      // Vitesse : atempo est borné à [0.5, 2], on l'enchaîne si besoin
+      const speed = clipSpeed(clip);
+      const tempo: string[] = [];
+      let remaining = speed;
+      while (remaining > 2.0001) { tempo.push('atempo=2'); remaining /= 2; }
+      while (remaining < 0.4999) { tempo.push('atempo=0.5'); remaining *= 2; }
+      if (Math.abs(remaining - 1) > 1e-4) tempo.push(`atempo=${remaining.toFixed(4)}`);
+      // Fondus, relatifs au début du clip (le délai est appliqué après)
+      const fadeIn = (clip.fadeIn ?? 0) / pixelsPerSecond;
+      const fadeOut = (clip.fadeOut ?? 0) / pixelsPerSecond;
+      const fades: string[] = [];
+      if (fadeIn > 0) fades.push(`afade=t=in:st=0:d=${fmt(fadeIn)}`);
+      if (fadeOut > 0) fades.push(`afade=t=out:st=${fmt(Math.max(0, durationSec - fadeOut))}:d=${fmt(fadeOut)}`);
       await ff.exec([
         '-ss', fmt((clip.offset ?? 0) / pixelsPerSecond),
         '-i', inputName,
-        '-t', fmt(durationSec),
-        '-af', `volume=${volume},adelay=${startMs}|${startMs}`,
+        '-t', fmt(durationSec * speed),
+        '-af', [...tempo, `volume=${volume}`, ...fades, `adelay=${startMs}|${startMs}`].join(','),
         '-ar', '44100',
         '-ac', '2',
         '-y',

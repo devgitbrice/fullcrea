@@ -5,7 +5,7 @@ import type { Clip, Track } from './types';
 import {
   splitClip, computeRipple, overlapsOnTrack, findFreeStart, findFreeGroupDelta,
   neighborBounds, findActiveVisual, findActiveAudio, mediaTimeSec, clipEdges, isClipLocked, newId, trimBounds, clamp,
-  flattenClips, wouldCreateCycle, sequenceDurationPx,
+  flattenClips, wouldCreateCycle, sequenceDurationPx, clipSpeed, sourceSpanPx, clipGain,
 } from './clipOps.ts';
 
 const clip = (id: string, track: number, start: number, width: number, extra: Partial<Clip> = {}): Clip => ({
@@ -237,4 +237,51 @@ test('wouldCreateCycle : directe, indirecte et cas sain', () => {
 test('sequenceDurationPx : fin du clip le plus tardif', () => {
   assert.equal(sequenceDurationPx([clip('a', 1, 0, 100), clip('b', 2, 300, 50)]), 350);
   assert.equal(sequenceDurationPx([]), 0);
+});
+
+// --- VITESSE ET FONDUS ---
+
+test('clipSpeed : borné, défaut 1', () => {
+  assert.equal(clipSpeed(clip('a', 1, 0, 100)), 1);
+  assert.equal(clipSpeed(clip('a', 1, 0, 100, { speed: 2 })), 2);
+  assert.equal(clipSpeed(clip('a', 1, 0, 100, { speed: 0 })), 1);
+  assert.equal(clipSpeed(clip('a', 1, 0, 100, { speed: 99 })), 4);
+});
+
+test('mediaTimeSec suit la vitesse', () => {
+  const fast = clip('a', 1, 100, 100, { speed: 2, offset: 30 });
+  // 30 px d'offset + 30 px parcourus à ×2 = 90 px de source = 3 s
+  assert.equal(mediaTimeSec(fast, 130), 3);
+  assert.equal(sourceSpanPx(fast), 200);
+});
+
+test('splitClip : l\'offset de la moitié droite tient compte de la vitesse', () => {
+  const c = clip('a', 1, 0, 200, { speed: 2, offset: 0, fadeIn: 20, fadeOut: 20 });
+  const [l, r] = splitClip(c, 50, ['l', 'r'])!;
+  assert.equal(r.offset, 100);           // 50 px × 2
+  assert.equal(l.fadeIn, 20);
+  assert.equal(l.fadeOut, undefined);    // le fondu de sortie part à droite
+  assert.equal(r.fadeOut, 20);
+  assert.equal(r.fadeIn, undefined);
+});
+
+test('trimBounds : la source consommée dépend de la vitesse', () => {
+  // 120 px de source à ×2 = 60 px de timeline au maximum
+  const clips = [clip('me', 1, 0, 40, { speed: 2, offset: 0, sourceDuration: 120 })];
+  const b = trimBounds(clips, clips[0]);
+  assert.equal(b.maxEnd, 60);
+  // Avec un offset de 40, on peut remonter de 20 px sur la timeline
+  const c2 = [clip('me', 1, 100, 40, { speed: 2, offset: 40, sourceDuration: 200 })];
+  assert.equal(trimBounds(c2, c2[0]).minStart, 80);
+});
+
+test('clipGain : volume, fondus d\'entrée et de sortie, muet', () => {
+  const c = clip('a', 2, 0, 100, { type: 'audio', volume: 0.8, fadeIn: 20, fadeOut: 20 });
+  assert.equal(clipGain(c, 0), 0);                 // début du fondu d'entrée
+  assert.equal(clipGain(c, 10), 0.4);              // moitié du fondu
+  assert.equal(clipGain(c, 50), 0.8);              // plein volume
+  assert.equal(clipGain(c, 90), 0.4);              // moitié du fondu de sortie
+  assert.equal(clipGain(c, 100), 0);               // fin
+  assert.equal(clipGain({ ...c, muted: true }, 50), 0);
+  assert.equal(clipGain(clip('b', 2, 0, 100, { type: 'audio' }), 50), 1);
 });

@@ -142,6 +142,7 @@ interface TrackRow {
   sequence_id: string | null; track_index: number;
   type: Track['type']; name: string; kind?: Track['kind'] | null;
   muted?: boolean | null; hidden?: boolean | null; locked?: boolean | null;
+  solo?: boolean | null; height_px?: number | null; collapsed?: boolean | null;
 }
 
 interface ClipRow {
@@ -150,6 +151,8 @@ interface ClipRow {
   offset_px?: number | null; source_duration_px?: number | null;
   volume?: number | null; muted?: boolean | null;
   tts?: Clip['tts'] | null; sequence_ref?: string | null;
+  speed?: number | null; fade_in_px?: number | null; fade_out_px?: number | null;
+  transition?: Clip['transition'] | null; link_id?: string | null;
   transform?: Clip['transform'] | null;
   text_content?: string | null; font_size?: number | null;
   font_family?: string | null; text_color?: string | null;
@@ -166,6 +169,9 @@ function toTrack(t: TrackRow): Track {
     hidden: t.hidden || undefined,
     locked: t.locked || undefined,
     kind: t.kind ?? undefined,
+    solo: t.solo || undefined,
+    height: t.height_px ?? undefined,
+    collapsed: t.collapsed || undefined,
   };
 }
 
@@ -182,6 +188,11 @@ function toClip(c: ClipRow): Clip {
     sourceDuration: c.source_duration_px ?? undefined,
     volume: c.volume ?? undefined,
     muted: c.muted || undefined,
+    speed: c.speed ?? undefined,
+    fadeIn: c.fade_in_px ?? undefined,
+    fadeOut: c.fade_out_px ?? undefined,
+    transition: c.transition ?? undefined,
+    linkId: c.link_id ?? undefined,
     tts: c.tts ?? undefined,
     sequenceRef: c.sequence_ref ?? undefined,
     transform: c.transform ?? undefined,
@@ -220,7 +231,7 @@ export async function fetchSharePayload(supabase: SupabaseClient, id: string): P
 
   const project = data.project as {
     name: string;
-    sequences: { id: string; name: string; markers?: Marker[] }[] | null;
+    sequences: { id: string; name: string; markers?: Marker[]; workArea?: Sequence['workArea'] }[] | null;
     activeSequenceId: string | null;
     settings: ProjectSettings;
     tracks: TrackRow[];
@@ -231,7 +242,7 @@ export async function fetchSharePayload(supabase: SupabaseClient, id: string): P
 
   const metas = Array.isArray(project.sequences) && project.sequences.length > 0
     ? project.sequences
-    : [{ id: MAIN_SEQUENCE_ID, name: 'Timeline 1', markers: [] as Marker[] }];
+    : [{ id: MAIN_SEQUENCE_ID, name: 'Timeline 1', markers: [] as Marker[], workArea: null }];
 
   const sequences: Sequence[] = metas.map((meta) => ({
     id: meta.id,
@@ -243,6 +254,7 @@ export async function fetchSharePayload(supabase: SupabaseClient, id: string): P
       .filter((c) => (c.sequence_id ?? MAIN_SEQUENCE_ID) === meta.id)
       .map(toClip),
     markers: Array.isArray(meta.markers) && meta.markers.length > 0 ? meta.markers : (EMPTY_MARKERS as Marker[]),
+    workArea: meta.workArea ?? null,
   }));
 
   const sequenceId = sequences.some((s) => s.id === share.sequenceId)

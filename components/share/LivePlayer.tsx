@@ -6,9 +6,12 @@ import type { Clip, ProjectSettings, Sequence, Track } from '@/lib/timeline/type
 import { PX_PER_SEC_BASE } from '@/lib/timeline/types';
 import {
   clipEnd, findActiveAudioOnTrack, findActiveVisual, flattenClips, mediaTimeSec,
+  clipSpeed, clipGain, audibleTrackIds,
 } from '@/lib/timeline/clipOps';
 import { defaultImageTransform } from '@/components/ProjectContext';
-import TextLayer from '@/components/TextLayer';
+import StageFrame from '@/components/StageFrame';
+import TextClips from '@/components/TextClips';
+import { visualTransformCss } from '@/lib/timeline/textLayout';
 
 // Resynchronise un média quand il dérive de plus d'un tiers de seconde
 const SYNC_THRESHOLD_SEC = 0.35;
@@ -20,15 +23,6 @@ function formatTime(seconds: number): string {
   const m = Math.floor(total / 60);
   const s = total % 60;
   return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
-}
-
-function transformStyle(clip: Clip) {
-  const t = clip.transform || defaultImageTransform;
-  return {
-    transform: `translate(${t.positionX}px, ${t.positionY}px) rotateX(${t.rotationX}deg) rotateY(${t.rotationY}deg) rotateZ(${t.rotationZ || 0}deg) scaleX(${t.scaleX}) scaleY(${t.scaleY})`,
-    transformOrigin: 'center center',
-    transformStyle: 'preserve-3d' as const,
-  };
 }
 
 /** Une piste audio = un élément <audio>, comme dans l'éditeur. */
@@ -51,6 +45,10 @@ function TrackAudio({ track, clips, playing, muted, timeRef }: {
       setActiveId(prev => (clip?.id ?? null) === prev ? prev : (clip?.id ?? null));
       const el = ref.current;
       if (el && clip?.src) {
+        const gain = muted || track.muted ? 0 : clipGain(clip, timeRef.current);
+        if (Math.abs(el.volume - gain) > 0.01) el.volume = Math.min(1, Math.max(0, gain));
+        const speed = clipSpeed(clip);
+        if (el.playbackRate !== speed) el.playbackRate = speed;
         const target = mediaTimeSec(clip, timeRef.current);
         if (Math.abs(el.currentTime - target) > SYNC_THRESHOLD_SEC) el.currentTime = target;
         if (playing && el.paused) el.play().catch(() => {});
@@ -62,14 +60,14 @@ function TrackAudio({ track, clips, playing, muted, timeRef }: {
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [clips, track.id, playing, timeRef]);
+  }, [clips, track.id, playing, muted, track.muted, timeRef]);
 
+  // Volume piloté image par image (fondus) ; ici seulement le muet
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
-    el.volume = Math.min(1, Math.max(0, active?.volume ?? 1));
     el.muted = muted || !!active?.muted || !!track.muted;
-  }, [active?.volume, active?.muted, muted, track.muted]);
+  }, [active?.muted, muted, track.muted]);
 
   return <audio ref={ref} src={active?.src || undefined} preload="auto" />;
 }
@@ -104,7 +102,10 @@ export default function LivePlayer({ sequences, sequenceId, settings, bare = fal
     for (const s of sequences) for (const t of s.tracks) if (!seen.has(t.id)) { seen.add(t.id); out.push(t); }
     return out;
   }, [sequences]);
-  const audioTracks = useMemo(() => tracks.filter(t => t.type === 'audio' && !t.muted), [tracks]);
+  const audioTracks = useMemo(() => {
+    const audible = audibleTrackIds(tracks);
+    return tracks.filter(t => audible.has(t.id));
+  }, [tracks]);
 
   const durationPx = useMemo(() => clips.reduce((max, c) => Math.max(max, clipEnd(c)), 0), [clips]);
   const durationSec = durationPx / PX_PER_SEC_BASE;
@@ -156,6 +157,10 @@ export default function LivePlayer({ sequences, sequenceId, settings, bare = fal
       const el = videoRef.current;
       const clip = findActiveVisual(clips, tracks, next);
       if (el && clip?.type === 'video' && clip.src) {
+        const speed = clipSpeed(clip);
+        if (el.playbackRate !== speed) el.playbackRate = speed;
+        const gain = muted ? 0 : clipGain(clip, next);
+        if (Math.abs(el.volume - gain) > 0.01) el.volume = Math.min(1, Math.max(0, gain));
         const target = mediaTimeSec(clip, next);
         if (Math.abs(el.currentTime - target) > SYNC_THRESHOLD_SEC) el.currentTime = target;
         if (el.paused) el.play().catch(() => {});
@@ -166,7 +171,7 @@ export default function LivePlayer({ sequences, sequenceId, settings, bare = fal
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [playing, durationPx, clips, tracks]);
+  }, [playing, durationPx, clips, tracks, muted]);
 
   useEffect(() => {
     if (!playing) videoRef.current?.pause();
@@ -175,9 +180,8 @@ export default function LivePlayer({ sequences, sequenceId, settings, bare = fal
   useEffect(() => {
     const el = videoRef.current;
     if (!el) return;
-    el.volume = Math.min(1, Math.max(0, activeVisual?.volume ?? 1));
     el.muted = muted || !!activeVisual?.muted || !!tracks.find(t => t.id === activeVisual?.track)?.muted;
-  }, [activeVisual?.id, activeVisual?.volume, activeVisual?.muted, activeVisual?.track, muted, tracks]);
+  }, [activeVisual?.id, activeVisual?.muted, activeVisual?.track, muted, tracks]);
 
   // Nouveau clip vidéo : on se replace au bon endroit de la source
   const handleLoadedMetadata = () => {
@@ -212,33 +216,36 @@ export default function LivePlayer({ sequences, sequenceId, settings, bare = fal
         className="relative w-full bg-black overflow-hidden"
         style={{ aspectRatio: `${settings.width} / ${settings.height}` }}
       >
-        {activeVisual?.src ? (
-          activeVisual.type === 'video' ? (
-            <video
-              ref={videoRef}
-              src={activeVisual.src}
-              onLoadedMetadata={handleLoadedMetadata}
-              playsInline
-              preload="auto"
-              className="w-full h-full object-contain"
-              style={transformStyle(activeVisual)}
-            />
-          ) : (
-            <img
-              src={activeVisual.src}
-              alt={activeVisual.name}
-              className="w-full h-full object-contain"
-              style={transformStyle(activeVisual)}
-            />
-          )
-        ) : (
+        {/* Scène composée en pixels projet : même géométrie qu'à l'export */}
+        <StageFrame settings={settings}>
+          {activeVisual?.src && (
+            activeVisual.type === 'video' ? (
+              <video
+                ref={videoRef}
+                src={activeVisual.src}
+                onLoadedMetadata={handleLoadedMetadata}
+                playsInline
+                preload="auto"
+                className="absolute inset-0 w-full h-full object-contain"
+                style={{ transform: visualTransformCss(activeVisual) }}
+              />
+            ) : (
+              <img
+                src={activeVisual.src}
+                alt={activeVisual.name}
+                className="absolute inset-0 w-full h-full object-contain"
+                style={{ transform: visualTransformCss(activeVisual) }}
+              />
+            )
+          )}
+          <TextClips texts={activeTexts} />
+        </StageFrame>
+
+        {empty && (
           <div className="absolute inset-0 flex items-center justify-center text-gray-700 text-xs">
-            {empty ? 'Cette timeline est vide' : ''}
+            Cette timeline est vide
           </div>
         )}
-
-        {/* Textes en surimpression */}
-        <TextLayer texts={activeTexts} settings={settings} />
 
         {/* Pistes audio : un élément par piste (voix off, musique, micro…) */}
         {audioTracks.map(track => (

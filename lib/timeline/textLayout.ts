@@ -29,3 +29,19 @@ export function textTransformCss(clip: Clip): string {
   const t = textTransform(clip);
   return `translate(${t.positionX}px, ${t.positionY}px) rotate(${t.rotationZ || 0}deg) scale(${t.scaleX}, ${t.scaleY})`;
 }
+
+/**
+ * Transformation CSS d'un clip visuel (image ou vidéo), exprimée elle aussi en
+ * pixels projet : même convention que le texte et que l'export.
+ * L'inclinaison 3D reste une fantaisie d'aperçu (non rendue à l'export).
+ */
+export function visualTransformCss(clip: Clip): string {
+  const t = textTransform(clip);
+  return [
+    `translate(${t.positionX}px, ${t.positionY}px)`,
+    t.rotationX ? `rotateX(${t.rotationX}deg)` : '',
+    t.rotationY ? `rotateY(${t.rotationY}deg)` : '',
+    `rotate(${t.rotationZ || 0}deg)`,
+    `scale(${t.scaleX}, ${t.scaleY})`,
+  ].filter(Boolean).join(' ');
+}

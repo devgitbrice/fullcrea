@@ -4,7 +4,7 @@ import { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import {
   Download, ChevronDown, Loader2, AlertTriangle, Clock, Link2, Code2, Copy, Check, ExternalLink, RefreshCw,
 } from 'lucide-react';
-import { useProject, defaultImageTransform } from '@/components/ProjectContext';
+import { useProject } from '@/components/ProjectContext';
 import { useToast } from '@/components/Toast';
 import { useEscapeKey } from '@/lib/hooks/useEscapeKey';
 import { useBeforeUnload } from '@/lib/hooks/useBeforeUnload';
@@ -53,8 +53,6 @@ async function copyText(text: string): Promise<boolean> {
 
 // Les clips stockent start/width en pixels à zoom=1 → 30 px/s.
 const PIXELS_PER_SECOND = 30;
-
-const DEFAULT_TRANSFORM_JSON = JSON.stringify(defaultImageTransform);
 
 function formatSeconds(seconds: number): string {
   const total = Math.max(0, Math.round(seconds));
@@ -111,11 +109,11 @@ export default function ExportButton() {
   const hasClips = clips.length > 0;
   const durationLabel = formatSeconds(projectDurationPx / PIXELS_PER_SECOND);
 
-  // Les textes sont incrustés à l'export ; les transformations ne le sont pas encore
-  const hasTransforms = useMemo(() => clips.some(
-    (c) => (c.type === 'image' || c.type === 'video')
-      && !!c.transform && JSON.stringify(c.transform) !== DEFAULT_TRANSFORM_JSON
-  ), [clips]);
+  // Textes et transformations sont rendus ; seule l'inclinaison 3D ne l'est pas
+  const hasTransforms = useMemo(
+    () => clips.some((c) => !!c.transform && (c.transform.rotationX !== 0 || c.transform.rotationY !== 0)),
+    [clips]
+  );
 
   const close = useCallback(() => setOpen(false), []);
   useEscapeKey(close, open && !rendering);
@@ -339,7 +337,8 @@ export default function ExportButton() {
             <div className="text-xs text-amber-200 bg-amber-950/40 border border-amber-900 rounded p-2 flex items-start gap-2">
               <AlertTriangle size={12} className="shrink-0 mt-0.5 text-amber-400" />
               <span className="break-words">
-                Les transformations (rotation, échelle, position) ne sont pas encore appliquées à l&apos;export.
+                L&apos;inclinaison 3D d&apos;une image n&apos;est pas rendue à l&apos;export (position, échelle et
+                rotation le sont).
               </span>
             </div>
           )}
