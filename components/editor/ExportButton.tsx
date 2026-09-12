@@ -54,6 +54,9 @@ async function copyText(text: string): Promise<boolean> {
 // Les clips stockent start/width en pixels à zoom=1 → 30 px/s.
 const PIXELS_PER_SECOND = 30;
 
+/** Ouvre le panneau d'export depuis ailleurs (vue mindmap). */
+export const OPEN_EXPORT_EVENT = 'fullcrea:open-export';
+
 function formatSeconds(seconds: number): string {
   const total = Math.max(0, Math.round(seconds));
   const m = Math.floor(total / 60);
@@ -118,6 +121,13 @@ export default function ExportButton() {
   const close = useCallback(() => setOpen(false), []);
   useEscapeKey(close, open && !rendering);
   useBeforeUnload(rendering);
+
+  // Ouverture déclenchée par une autre vue (mindmap)
+  useEffect(() => {
+    const onOpen = () => { setOpen(true); setMode('download'); };
+    window.addEventListener(OPEN_EXPORT_EVENT, onOpen);
+    return () => window.removeEventListener(OPEN_EXPORT_EVENT, onOpen);
+  }, []);
 
   useEffect(() => {
     if (!open || rendering) return;

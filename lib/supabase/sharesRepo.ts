@@ -231,7 +231,7 @@ export async function fetchSharePayload(supabase: SupabaseClient, id: string): P
 
   const project = data.project as {
     name: string;
-    sequences: { id: string; name: string; markers?: Marker[]; workArea?: Sequence['workArea'] }[] | null;
+    sequences: { id: string; name: string; markers?: Marker[]; workArea?: Sequence['workArea']; master?: boolean }[] | null;
     activeSequenceId: string | null;
     settings: ProjectSettings;
     tracks: TrackRow[];
@@ -242,7 +242,7 @@ export async function fetchSharePayload(supabase: SupabaseClient, id: string): P
 
   const metas = Array.isArray(project.sequences) && project.sequences.length > 0
     ? project.sequences
-    : [{ id: MAIN_SEQUENCE_ID, name: 'Timeline 1', markers: [] as Marker[], workArea: null }];
+    : [{ id: MAIN_SEQUENCE_ID, name: 'Timeline 1', markers: [] as Marker[], workArea: null, master: false }];
 
   const sequences: Sequence[] = metas.map((meta) => ({
     id: meta.id,
@@ -255,6 +255,7 @@ export async function fetchSharePayload(supabase: SupabaseClient, id: string): P
       .map(toClip),
     markers: Array.isArray(meta.markers) && meta.markers.length > 0 ? meta.markers : (EMPTY_MARKERS as Marker[]),
     workArea: meta.workArea ?? null,
+    master: meta.master || undefined,
   }));
 
   const sequenceId = sequences.some((s) => s.id === share.sequenceId)

@@ -143,6 +143,11 @@ interface ProjectContextType {
   renameSequence: (id: string, name: string) => void;
   /** Déplace une timeline dans l'ordre du projet (vue mindmap) */
   moveSequence: (id: string, toIndex: number) => void;
+  /**
+   * Crée (ou met à jour) la timeline d'assemblage qui enchaîne toutes les
+   * autres dans l'ordre, et renvoie son id.
+   */
+  buildMasterSequence: () => string;
   deleteSequence: (id: string) => void;
   // Insère une autre timeline comme un clip dans la timeline active
   insertSequenceClip: (sequenceId: string, atPx: number) => string | null;
@@ -966,6 +971,73 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
   }, [getCurrent, updateCurrentProject, resetEditingState]);
 
   /**
+   * Timeline d'assemblage : un clip par timeline du projet, bout à bout dans
+   * l'ordre courant. Recalculée à chaque appel pour refléter les changements.
+   */
+  const buildMasterSequence = useCallback((): string => {
+    const project = getCurrent();
+    if (!project) return '';
+    const existing = project.sequences.find(s => s.master);
+    const id = existing?.id ?? newId('seq');
+    const sources = project.sequences.filter(s => !s.master);
+
+    updateCurrentProject(p => {
+      const others = p.sequences.filter(s => !s.master);
+      const current = p.sequences.find(s => s.id === id);
+      // Pistes propres à l'assemblage (ids uniques dans le projet)
+      let nextId = nextProjectTrackId(p);
+      const tracks: Track[] = current?.tracks?.length
+        ? current.tracks
+        : [
+          { id: nextId++, type: 'text', name: 'Texte' },
+          { id: nextId++, type: 'video', name: 'Video 1' },
+          { id: nextId++, type: 'audio', name: 'Audio 1' },
+        ];
+      const videoTrack = tracks.find(t => t.type === 'video') ?? tracks[0];
+
+      let cursor = 0;
+      const clips: Clip[] = others.map((seq, i) => {
+        const width = Math.max(MIN_CLIP_WIDTH_PX, sequenceDurationPx(seq.clips));
+        const clip: Clip = {
+          id: `master_${seq.id}`,
+          name: `${i + 1}. ${seq.name}`,
+          type: 'sequence',
+          track: videoTrack.id,
+          start: cursor,
+          width,
+          src: '',
+          sequenceRef: seq.id,
+        };
+        cursor += width;
+        return clip;
+      });
+
+      const master: Sequence = {
+        id,
+        name: current?.name ?? 'Montage complet',
+        clips,
+        tracks,
+        markers: current?.markers ?? EMPTY_MARKERS,
+        workArea: current?.workArea ?? null,
+        master: true,
+      };
+      const sequences = current
+        ? p.sequences.map(s => s.id === id ? master : s)
+        : [...p.sequences, master];
+      return {
+        ...p,
+        sequences,
+        activeSequenceId: id,
+        clips: master.clips,
+        tracks: master.tracks,
+        markers: master.markers,
+      };
+    });
+    resetEditingState();
+    return sources.length >= 0 ? id : id;
+  }, [getCurrent, updateCurrentProject, resetEditingState]);
+
+  /**
    * Insère une autre timeline comme un clip dans la timeline active. Refusé si
    * cela créerait un cycle (une timeline ne peut pas se contenir elle-même).
    */
@@ -1491,6 +1563,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
       markers: currentProject.markers, addMarker, deleteMarker, updateMarker,
       sequences: currentProject.sequences, activeSequenceId: currentProject.activeSequenceId,
       createSequence, selectSequence, renameSequence, moveSequence, deleteSequence, insertSequenceClip,
+      buildMasterSequence,
       flatClips, allTracks,
       previewAsset, setPreviewAsset, scale: PX_PER_SEC_BASE * zoomLevel,
       projectSettings: currentProject.projectSettings, setProjectSettings,

@@ -116,7 +116,7 @@ export async function fetchAllProjects(supabase: SupabaseClient, userId: string)
     // Métadonnées des timelines : colonne `sequences` (id, name, markers).
     // Projet antérieur : une seule timeline, celle qui porte tout le contenu.
     const storedSequences = Array.isArray(p.sequences) && p.sequences.length > 0
-      ? (p.sequences as { id: string; name: string; markers?: Marker[]; workArea?: Sequence['workArea'] }[])
+      ? (p.sequences as { id: string; name: string; markers?: Marker[]; workArea?: Sequence['workArea']; master?: boolean }[])
       : [{ id: MAIN_SEQUENCE_ID, name: 'Timeline 1', markers: Array.isArray(p.markers) ? (p.markers as Marker[]) : [] }];
 
     const sequences: Sequence[] = storedSequences.map((meta) => ({
@@ -126,6 +126,7 @@ export async function fetchAllProjects(supabase: SupabaseClient, userId: string)
       clips: clipRows.filter((c) => c.sequenceId === meta.id).map((c) => c.clip),
       markers: Array.isArray(meta.markers) && meta.markers.length > 0 ? meta.markers : EMPTY_MARKERS,
       workArea: meta.workArea ?? null,
+      master: meta.master || undefined,
     }));
 
     const activeId = sequences.some((x) => x.id === p.active_sequence_id)
@@ -167,7 +168,7 @@ export async function upsertProject(
     markers: p.markers,
     // Métadonnées des timelines ; leur contenu vit dans tracks/clips (sequence_id)
     sequences: p.sequences.map((seq) => ({
-      id: seq.id, name: seq.name, markers: seq.markers, workArea: seq.workArea ?? null,
+      id: seq.id, name: seq.name, markers: seq.markers, workArea: seq.workArea ?? null, master: !!seq.master,
     })),
     active_sequence_id: p.activeSequenceId,
   });

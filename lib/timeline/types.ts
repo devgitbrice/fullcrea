@@ -116,6 +116,8 @@ export interface Sequence {
   markers: Marker[];
   /** Zone de travail (in/out) : null = toute la timeline */
   workArea?: WorkArea | null;
+  /** Timeline d'assemblage : reprend toutes les autres, dans l'ordre */
+  master?: boolean;
 }
 
 export interface Project {
