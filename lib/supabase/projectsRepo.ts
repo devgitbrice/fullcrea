@@ -16,6 +16,62 @@ function pgError(prefix: string, err: { message?: string; details?: string; hint
   return new Error(`${prefix}: ${parts.join(' — ') || 'erreur inconnue'}`);
 }
 
+
+// --- Tolérance aux colonnes manquantes (migrations en retard) ---
+// Quand la base n'a pas encore reçu supabase/schema.sql, PostgREST renvoie
+// PGRST204 « Could not find the 'x' column ». Plutôt que de perdre toute la
+// sauvegarde pour une propriété récente, on retire la colonne incriminée et on
+// réessaie ; les colonnes manquantes sont mémorisées pour la session afin de ne
+// pas rejouer l'aller-retour à chaque écriture.
+type Row = Record<string, unknown>;
+const missingColumns = new Map<string, Set<string>>();
+
+function missingColumnName(err: { code?: string; message?: string }): string | null {
+  if (err.code !== 'PGRST204') return null;
+  const m = /'([^']+)' column/.exec(err.message ?? '');
+  return m ? m[1] : null;
+}
+
+function stripKnownMissing(table: string, rows: Row[]): Row[] {
+  const known = missingColumns.get(table);
+  if (!known || known.size === 0) return rows;
+  return rows.map(row => {
+    const copy: Row = {};
+    for (const [k, v] of Object.entries(row)) if (!known.has(k)) copy[k] = v;
+    return copy;
+  });
+}
+
+function rememberMissing(table: string, column: string): void {
+  const set = missingColumns.get(table) ?? new Set<string>();
+  set.add(column);
+  missingColumns.set(table, set);
+  console.warn(`[fullcrea] Colonne « ${column} » absente de ${table} : sauvegarde sans cette propriété. Appliquez supabase/schema.sql pour la rétablir.`);
+}
+
+// Écrit des lignes en retirant une à une les colonnes que la base ne connaît pas.
+async function writeTolerant(
+  supabase: SupabaseClient,
+  table: string,
+  rows: Row[],
+  mode: 'insert' | 'upsert',
+  prefix: string
+): Promise<void> {
+  let payload = stripKnownMissing(table, rows);
+  // Au pire une tentative par colonne de la première ligne
+  const maxAttempts = Object.keys(rows[0] ?? {}).length + 1;
+  for (let i = 0; i < maxAttempts; i++) {
+    const query = supabase.from(table);
+    const { error } = mode === 'insert' ? await query.insert(payload) : await query.upsert(payload);
+    if (!error) return;
+    const column = missingColumnName(error);
+    if (!column) throw pgError(prefix, error);
+    rememberMissing(table, column);
+    payload = stripKnownMissing(table, payload);
+  }
+  throw new Error(`${prefix}: trop de colonnes manquantes dans ${table}`);
+}
+
 // --- Lecture ---
 
 export async function fetchAllProjects(supabase: SupabaseClient, userId: string): Promise<Project[]> {
@@ -160,7 +216,7 @@ export async function upsertProject(
   userId: string,
   p: Project
 ): Promise<void> {
-  const { error: pErr } = await supabase.from('fullcrea_projects').upsert({
+  await writeTolerant(supabase, 'fullcrea_projects', [{
     id: p.id,
     user_id: userId,
     name: p.name,
@@ -171,8 +227,7 @@ export async function upsertProject(
       id: seq.id, name: seq.name, markers: seq.markers, workArea: seq.workArea ?? null, master: !!seq.master,
     })),
     active_sequence_id: p.activeSequenceId,
-  });
-  if (pErr) throw pgError('Écriture fullcrea_projects échouée', pErr);
+  }], 'upsert', 'Écriture fullcrea_projects échouée');
 
   const { error: sErr } = await supabase.from('fullcrea_project_settings').upsert({
     project_id: p.id,
@@ -192,7 +247,7 @@ export async function upsertProject(
   // piste sont uniques dans tout le projet, la PK (project_id, track_index) tient.
   const allTracks = p.sequences.flatMap((seq) => seq.tracks.map((t) => ({ t, sequenceId: seq.id })));
   if (allTracks.length > 0) {
-    const { error: tErr } = await supabase.from('fullcrea_tracks').insert(
+    await writeTolerant(supabase, 'fullcrea_tracks',
       allTracks.map(({ t, sequenceId }) => ({
         project_id: p.id,
         sequence_id: sequenceId,
@@ -206,9 +261,8 @@ export async function upsertProject(
         solo: !!t.solo,
         height_px: t.height ?? null,
         collapsed: !!t.collapsed,
-      }))
-    );
-    if (tErr) throw pgError('Écriture fullcrea_tracks échouée', tErr);
+      })),
+      'insert', 'Écriture fullcrea_tracks échouée');
   }
 
   // Garde anti-orphelins : la FK (project_id, track_index) refuserait un clip
@@ -223,7 +277,7 @@ export async function upsertProject(
       return false;
     });
   if (safeClips.length > 0) {
-    const { error: cErr } = await supabase.from('fullcrea_clips').insert(
+    await writeTolerant(supabase, 'fullcrea_clips',
       safeClips.map(({ c, sequenceId }) => ({
         id: c.id,
         project_id: p.id,
@@ -250,9 +304,8 @@ export async function upsertProject(
         font_size: c.fontSize ?? null,
         font_family: c.fontFamily ?? null,
         text_color: c.textColor ?? null,
-      }))
-    );
-    if (cErr) throw pgError('Écriture fullcrea_clips échouée', cErr);
+      })),
+      'insert', 'Écriture fullcrea_clips échouée');
   }
 
   // Assets : on filtre les blob: URLs (créées via URL.createObjectURL),
