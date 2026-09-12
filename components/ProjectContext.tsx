@@ -141,6 +141,8 @@ interface ProjectContextType {
   createSequence: (name?: string) => string;
   selectSequence: (id: string) => void;
   renameSequence: (id: string, name: string) => void;
+  /** Déplace une timeline dans l'ordre du projet (vue mindmap) */
+  moveSequence: (id: string, toIndex: number) => void;
   deleteSequence: (id: string) => void;
   // Insère une autre timeline comme un clip dans la timeline active
   insertSequenceClip: (sequenceId: string, atPx: number) => string | null;
@@ -916,6 +918,21 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     }));
   }, [updateCurrentProject]);
 
+  // Réordonne les timelines du projet (hors historique, comme les autres
+  // actions de structure).
+  const moveSequence = useCallback((id: string, toIndex: number) => {
+    updateCurrentProject(p => {
+      const from = p.sequences.findIndex(s => s.id === id);
+      if (from < 0) return p;
+      const to = Math.min(Math.max(0, toIndex), p.sequences.length - 1);
+      if (to === from) return p;
+      const sequences = [...p.sequences];
+      const [moved] = sequences.splice(from, 1);
+      sequences.splice(to, 0, moved);
+      return { ...p, sequences };
+    });
+  }, [updateCurrentProject]);
+
   // Supprime la timeline et les clips qui l'insèrent dans les autres timelines.
   // La dernière timeline d'un projet ne peut pas être supprimée.
   const deleteSequence = useCallback((id: string) => {
@@ -1473,7 +1490,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
       assets: currentProject.assets, setAssets,
       markers: currentProject.markers, addMarker, deleteMarker, updateMarker,
       sequences: currentProject.sequences, activeSequenceId: currentProject.activeSequenceId,
-      createSequence, selectSequence, renameSequence, deleteSequence, insertSequenceClip,
+      createSequence, selectSequence, renameSequence, moveSequence, deleteSequence, insertSequenceClip,
       flatClips, allTracks,
       previewAsset, setPreviewAsset, scale: PX_PER_SEC_BASE * zoomLevel,
       projectSettings: currentProject.projectSettings, setProjectSettings,

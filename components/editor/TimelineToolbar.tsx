@@ -1,14 +1,15 @@
 "use client";
 
 import { shouldIgnoreShortcut } from '@/lib/keyboard';
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import {
-  Copy, FoldHorizontal, ListChecks, Magnet, MousePointer2, Redo2, Scissors, SquareSplitHorizontal, Trash2, Type, Undo2,
+  Copy, FoldHorizontal, ListChecks, Magnet, MousePointer2, Network, Redo2, Scissors, SquareSplitHorizontal, Trash2, Type, Undo2,
   type LucideIcon,
 } from 'lucide-react';
 import { useProject, type ToolMode } from '@/components/ProjectContext';
 import ZoomControls from './ZoomControls';
 import SequenceSelector from './SequenceSelector';
+import MindmapView from './MindmapView';
 
 interface ToolDefinition {
   id: ToolMode;
@@ -86,6 +87,7 @@ export default function TimelineToolbar({
     snapEnabled,
     setSnapEnabled,
   } = useProject();
+  const [mindmapOpen, setMindmapOpen] = useState(false);
 
   // Raccourcis outils : ignorés avec un modificateur (Ctrl+C = copier, pas le
   // cutter ; Maj+lettre reste libre), pendant la saisie de texte et sur les
@@ -108,6 +110,17 @@ export default function TimelineToolbar({
     <div className="h-10 flex items-center px-4 gap-2 border-b border-gray-800 bg-gray-950 select-none shrink-0 overflow-x-auto custom-scrollbar">
       {/* Timeline courante du projet (et timelines imbriquées) */}
       <SequenceSelector />
+
+      {/* Vue d'ensemble du projet : une bulle par timeline */}
+      <button
+        onClick={() => setMindmapOpen(true)}
+        className={`${actionButtonClass} shrink-0`}
+        title="Vue mindmap du projet"
+        aria-label="Vue mindmap du projet"
+        aria-haspopup="dialog"
+      >
+        <Network size={18} />
+      </button>
 
       <Separator />
 
@@ -227,6 +240,8 @@ export default function TimelineToolbar({
       <div className="ml-auto shrink-0">
         <ZoomControls />
       </div>
+
+      {mindmapOpen && <MindmapView onClose={() => setMindmapOpen(false)} />}
     </div>
   );
 }
