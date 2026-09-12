@@ -293,22 +293,35 @@ function syncActiveSequence(p: Project): Project {
 // toujours un tableau, et au moins une timeline (les projets antérieurs n'ont
 // pas de `sequences` : leur contenu devient la timeline principale).
 function normalizeProject(raw: Project): Project {
-  const p = ensureSpecialTracks(ensureTextTrack(raw));
-  const markers = Array.isArray(p.markers) ? p.markers : EMPTY_MARKERS;
-  const stored = Array.isArray(p.sequences) ? p.sequences : [];
+  const markers = Array.isArray(raw.markers) ? raw.markers : EMPTY_MARKERS;
+  const stored = Array.isArray(raw.sequences) ? raw.sequences : [];
   if (stored.length === 0) {
+    const p = ensureSpecialTracks(ensureTextTrack(raw));
     const main: Sequence = { id: MAIN_SEQUENCE_ID, name: 'Timeline 1', clips: p.clips, tracks: p.tracks, markers };
     return { ...p, markers, sequences: [main], activeSequenceId: main.id };
   }
-  const sequences = stored.map(s => ({
-    ...s,
-    clips: Array.isArray(s.clips) ? s.clips : [],
-    tracks: Array.isArray(s.tracks) ? s.tracks : [],
-    markers: Array.isArray(s.markers) ? s.markers : EMPTY_MARKERS,
-  }));
-  const active = sequences.find(s => s.id === p.activeSequenceId) ?? sequences[0];
+  // Chaque timeline reçoit ses garanties (piste texte, pistes spéciales) avec
+  // des ids de piste uniques dans tout le projet : les garanties calculées sur
+  // le seul miroir étaient auparavant écrasées par la timeline active, et les
+  // pistes Voix Off / Musique / Micro n'apparaissaient jamais.
+  let nextId = Math.max(...stored.flatMap(s => (Array.isArray(s.tracks) ? s.tracks : []).map(t => t.id)), 0) + 1;
+  const sequences = stored.map(s => {
+    let tracks: Track[] = Array.isArray(s.tracks) ? s.tracks : [];
+    let clips: Clip[] = Array.isArray(s.clips) ? s.clips : [];
+    if (!tracks.some(t => t.type === 'text')) {
+      tracks = [{ id: nextId++, type: 'text', name: 'Texte' }, ...tracks];
+    }
+    const textTrack = tracks.find(t => t.type === 'text')!;
+    clips = clips.map(c => c.type === 'text' && c.track !== textTrack.id ? { ...c, track: textTrack.id } : c);
+    const missing = SPECIAL_TRACKS.filter(sp => !tracks.some(t => t.kind === sp.kind));
+    if (missing.length > 0) {
+      tracks = [...tracks, ...missing.map(sp => ({ id: nextId++, type: 'audio' as const, name: sp.name, kind: sp.kind }))];
+    }
+    return { ...s, clips, tracks, markers: Array.isArray(s.markers) ? s.markers : EMPTY_MARKERS };
+  });
+  const active = sequences.find(s => s.id === raw.activeSequenceId) ?? sequences[0];
   return {
-    ...p,
+    ...raw,
     sequences,
     activeSequenceId: active.id,
     clips: active.clips,
