@@ -38,9 +38,16 @@ export interface SharePayload {
 
 const SHARES_TABLE = 'fullcrea_shares';
 
+// Codes PostgREST/Postgres d'un schéma en retard : table, colonne ou fonction
+// absente. Le partage vit entièrement dans supabase/schema.sql, on le dit.
+const SCHEMA_CODES = new Set(['PGRST204', 'PGRST202', 'PGRST205', '42P01', '42703', '42883']);
+
 function shareError(prefix: string, err: { message?: string; details?: string; hint?: string; code?: string }): Error {
   const parts = [err.message, err.details, err.hint, err.code ? `(code ${err.code})` : null].filter(Boolean);
-  return new Error(`${prefix}: ${parts.join(' — ') || 'erreur inconnue'}`);
+  const schemaHint = err.code && SCHEMA_CODES.has(err.code)
+    ? ' — La base ne contient pas encore les objets du partage : exécutez supabase/schema.sql dans le SQL Editor de Supabase.'
+    : '';
+  return new Error(`${prefix}: ${parts.join(' — ') || 'erreur inconnue'}${schemaHint}`);
 }
 
 /** Identifiant de partage non devinable (l'URL est le seul secret). */

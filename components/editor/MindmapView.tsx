@@ -34,6 +34,19 @@ function formatDuration(px: number): string {
  * visualisation dans un nouvel onglet et l'export. La bulle du projet agit sur
  * une timeline d'assemblage qui enchaîne toutes les autres dans l'ordre.
  */
+// Écrit un message lisible dans l'onglet ouvert par la visualisation.
+function writePopup(win: Window | null, title: string, detail: string | null): void {
+  if (!win || win.closed) return;
+  try {
+    const esc = (t: string) => t.replace(/[&<>]/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[ch] ?? ch));
+    win.document.title = 'Gennn Cut';
+    win.document.body.style.cssText = 'margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;background:#000;color:#e5e7eb;font:14px system-ui,sans-serif;text-align:center;padding:24px';
+    win.document.body.innerHTML = `<div><p style="margin:0 0 8px">${esc(title)}</p>${detail ? `<p style="margin:0;color:#9ca3af;font-size:12px;max-width:560px">${esc(detail)}</p>` : ''}</div>`;
+  } catch {
+    // Onglet inaccessible (navigation déjà faite) : rien à afficher
+  }
+}
+
 export default function MindmapView({ onClose }: { onClose: () => void }) {
   const {
     currentProject, renameProject, sequences, activeSequenceId, isPersistenceCloud,
@@ -164,7 +177,11 @@ export default function MindmapView({ onClose }: { onClose: () => void }) {
       toast({ type: 'error', message: 'La visualisation par lien nécessite Supabase (mode local actif)' });
       return;
     }
+    // L'onglet est ouvert tout de suite (sinon le navigateur le bloque), avec
+    // un message d'attente ; en cas d'échec, l'erreur est écrite DANS cet
+    // onglet — c'est lui que regarde l'utilisateur, pas l'éditeur.
     const win = window.open('about:blank', '_blank');
+    writePopup(win, 'Préparation du lien de visualisation…', null);
     setSharing(id);
     try {
       const sequenceId = id === 'project' ? buildMasterSequence() : id;
@@ -185,12 +202,13 @@ export default function MindmapView({ onClose }: { onClose: () => void }) {
         durationSec: sequenceDurationPx(seq?.clips ?? []) / PX_PER_SEC_BASE,
       });
       const url = `${window.location.origin}/v/${share.id}`;
-      if (win) win.location.href = url;
+      if (win && !win.closed) win.location.href = url;
       else window.open(url, '_blank');
       toast({ type: 'success', message: 'Lien de visualisation ouvert' });
     } catch (e) {
-      win?.close();
-      toast({ type: 'error', message: e instanceof Error ? e.message : 'Visualisation impossible' });
+      const message = e instanceof Error ? e.message : 'Visualisation impossible';
+      writePopup(win, 'Le lien de visualisation n\'a pas pu être créé', message);
+      toast({ type: 'error', message });
     } finally {
       setSharing(null);
     }
