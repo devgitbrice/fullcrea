@@ -8,6 +8,7 @@ import {
 } from 'lucide-react';
 import { useProject, type ToolMode } from '@/components/ProjectContext';
 import ZoomControls from './ZoomControls';
+import SequenceSelector from './SequenceSelector';
 
 interface ToolDefinition {
   id: ToolMode;
@@ -104,7 +105,12 @@ export default function TimelineToolbar({
   const currentTool = TOOLS.find(t => t.id === activeTool) ?? TOOLS[0];
 
   return (
-    <div className="h-10 flex items-center px-4 gap-2 border-b border-gray-800 bg-gray-950 select-none shrink-0">
+    <div className="h-10 flex items-center px-4 gap-2 border-b border-gray-800 bg-gray-950 select-none shrink-0 overflow-x-auto custom-scrollbar">
+      {/* Timeline courante du projet (et timelines imbriquées) */}
+      <SequenceSelector />
+
+      <Separator />
+
       {/* Historique */}
       <button
         onClick={undo}

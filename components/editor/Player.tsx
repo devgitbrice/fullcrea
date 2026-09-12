@@ -107,8 +107,10 @@ const transportButtonClass =
 
 export default function Player() {
   const {
-    isPlaying, togglePlay, currentTime, clips, tracks, setCurrentTime, currentView,
+    isPlaying, togglePlay, currentTime, setCurrentTime, currentView,
     subscribeToTime, currentTimeRef, projectSettings, projectDurationPx,
+    // Timelines imbriquées dépliées : le lecteur ne voit que des clips ordinaires
+    flatClips: clips, allTracks: tracks,
   } = useProject();
 
   const videoRef = useRef<HTMLVideoElement>(null);

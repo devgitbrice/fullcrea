@@ -6,16 +6,17 @@ import { SupabaseClient } from '@supabase/supabase-js';
 import { getSupabase, getCurrentUser } from '@/lib/supabase/client';
 import { fetchAllProjects, upsertProject, deleteProjectRow, uploadAsset } from '@/lib/supabase/projectsRepo';
 import { useBeforeUnload } from '@/lib/hooks/useBeforeUnload';
-import type { Clip, Track, Marker, ImageTransform, Asset, ViewMode, ProjectSettings, Project, TrackKind } from '@/lib/timeline/types';
-import { EMPTY_MARKERS, PX_PER_SEC_BASE } from '@/lib/timeline/types';
+import type { Clip, Track, Marker, ImageTransform, Asset, ViewMode, ProjectSettings, Project, TrackKind, Sequence } from '@/lib/timeline/types';
+import { EMPTY_MARKERS, PX_PER_SEC_BASE, MIN_CLIP_WIDTH_PX } from '@/lib/timeline/types';
 import {
   newId, clipEnd, splitClip, computeRipple, findFreeStart, findFreeGroupDelta,
+  flattenClips, sequenceDurationPx, wouldCreateCycle,
 } from '@/lib/timeline/clipOps';
 
 // --- TYPES DU MODÈLE ---
 // Définis dans lib/timeline/types.ts (helpers purs testables sans bundler) et
 // ré-exportés ici : les imports existants ne changent pas.
-export type { Clip, Track, Marker, ImageTransform, Asset, ViewMode, ProjectSettings, Project, TrackKind } from '@/lib/timeline/types';
+export type { Clip, Track, Marker, ImageTransform, Asset, ViewMode, ProjectSettings, Project, TrackKind, Sequence } from '@/lib/timeline/types';
 export { PX_PER_SEC_BASE, MIN_CLIP_WIDTH_PX, EMPTY_MARKERS } from '@/lib/timeline/types';
 
 export const defaultImageTransform: ImageTransform = {
@@ -47,7 +48,8 @@ interface HistorySnapshot {
 // qu'elles ont empilée. `undoIfTop` n'annule que si elle est encore au sommet
 // (rien n'a été fait depuis). Opaque pour les appelants.
 export interface HistoryToken {
-  readonly projectId: string;
+  // Portée « projet#timeline » : chaque timeline a sa propre pile
+  readonly scope: string;
   readonly snapshot: HistorySnapshot;
 }
 
@@ -133,6 +135,20 @@ interface ProjectContextType {
   setAssets: Dispatch<SetStateAction<Asset[]>>;
   setProjectSettings: (settings: ProjectSettings) => void;
 
+  // Timelines du projet (séquences). La timeline active fournit clips/tracks/markers.
+  sequences: Sequence[];
+  activeSequenceId: string;
+  createSequence: (name?: string) => string;
+  selectSequence: (id: string) => void;
+  renameSequence: (id: string, name: string) => void;
+  deleteSequence: (id: string) => void;
+  // Insère une autre timeline comme un clip dans la timeline active
+  insertSequenceClip: (sequenceId: string, atPx: number) => string | null;
+  // Clips de la timeline active, timelines imbriquées dépliées (lecteur, export)
+  flatClips: Clip[];
+  // Toutes les pistes du projet (les clips dépliés peuvent venir d'autres timelines)
+  allTracks: Track[];
+
   // Marqueurs (discrets)
   markers: Marker[];
   addMarker: (timePx: number) => string;
@@ -178,11 +194,11 @@ const SAVE_DEBOUNCE_MS = 600;
 const HISTORY_COALESCE_MS = 400;
 const HISTORY_MAX_ENTRIES = 100;
 
-function getHistory(map: Map<string, ProjectHistory>, projectId: string): ProjectHistory {
-  let history = map.get(projectId);
+function getHistory(map: Map<string, ProjectHistory>, scope: string): ProjectHistory {
+  let history = map.get(scope);
   if (!history) {
     history = { undo: [], redo: [] };
-    map.set(projectId, history);
+    map.set(scope, history);
   }
   return history;
 }
@@ -194,6 +210,10 @@ export const TEXT_TRACK_ID = 0;
 const trackName = (type: 'video' | 'audio', tracks: Track[]) =>
   `${type === 'video' ? 'Video' : 'Audio'} ${tracks.filter(t => t.type === type).length + 1}`;
 const nextTrackId = (tracks: Track[]) => Math.max(...tracks.map(t => t.id), 0) + 1;
+// Les clips d'une timeline imbriquée gardent leur piste d'origine : les ids de
+// piste doivent donc être uniques dans tout le projet, pas seulement par timeline.
+const nextProjectTrackId = (p: Project) =>
+  Math.max(...p.sequences.flatMap(s => s.tracks.map(t => t.id)), ...p.tracks.map(t => t.id), 0) + 1;
 
 // Pistes audio spéciales, toujours présentes (créées à la volée sur les
 // projets existants par ensureSpecialTracks).
@@ -240,25 +260,68 @@ function ensureTextTrack(project: Project): Project {
   return { ...project, tracks, clips };
 }
 
-// Projet lu depuis le cloud ou localStorage : piste texte garantie et
-// `markers` toujours un tableau (les projets antérieurs n'ont pas le champ).
-function normalizeProject(raw: Project): Project {
-  const p = ensureSpecialTracks(ensureTextTrack(raw));
-  return { ...p, markers: Array.isArray(p.markers) ? p.markers : EMPTY_MARKERS };
+export const MAIN_SEQUENCE_ID = 'seq_main';
+
+/**
+ * Recopie les données de la timeline active dans `sequences` : c'est
+ * `sequences` qui fait foi (persistance, timelines imbriquées), les champs
+ * clips/tracks/markers du projet n'en sont que le miroir de travail.
+ * Identité préservée quand rien n'a changé (pas de sauvegarde inutile).
+ */
+function syncActiveSequence(p: Project): Project {
+  const active = p.sequences.find(s => s.id === p.activeSequenceId);
+  if (!active) return p;
+  if (active.clips === p.clips && active.tracks === p.tracks && active.markers === p.markers) return p;
+  return {
+    ...p,
+    sequences: p.sequences.map(s =>
+      s.id === p.activeSequenceId ? { ...s, clips: p.clips, tracks: p.tracks, markers: p.markers } : s
+    ),
+  };
 }
 
-const buildEmptyProject = (id: string, name: string): Project => ({
+// Projet lu depuis le cloud ou localStorage : piste texte garantie, `markers`
+// toujours un tableau, et au moins une timeline (les projets antérieurs n'ont
+// pas de `sequences` : leur contenu devient la timeline principale).
+function normalizeProject(raw: Project): Project {
+  const p = ensureSpecialTracks(ensureTextTrack(raw));
+  const markers = Array.isArray(p.markers) ? p.markers : EMPTY_MARKERS;
+  const stored = Array.isArray(p.sequences) ? p.sequences : [];
+  if (stored.length === 0) {
+    const main: Sequence = { id: MAIN_SEQUENCE_ID, name: 'Timeline 1', clips: p.clips, tracks: p.tracks, markers };
+    return { ...p, markers, sequences: [main], activeSequenceId: main.id };
+  }
+  const sequences = stored.map(s => ({
+    ...s,
+    clips: Array.isArray(s.clips) ? s.clips : [],
+    tracks: Array.isArray(s.tracks) ? s.tracks : [],
+    markers: Array.isArray(s.markers) ? s.markers : EMPTY_MARKERS,
+  }));
+  const active = sequences.find(s => s.id === p.activeSequenceId) ?? sequences[0];
+  return {
+    ...p,
+    sequences,
+    activeSequenceId: active.id,
+    clips: active.clips,
+    tracks: active.tracks,
+    markers: active.markers,
+  };
+}
+
+const buildEmptyProject = (id: string, name: string): Project => normalizeProject({
   id,
   name,
   clips: [],
   tracks: buildDefaultTracks(),
+  sequences: [],
+  activeSequenceId: MAIN_SEQUENCE_ID,
   assets: [],
   markers: EMPTY_MARKERS,
   projectSettings: { ...DEFAULT_SETTINGS },
   currentView: 'video',
 });
 
-const buildInitialDefaultProject = (): Project => ({
+const buildInitialDefaultProject = (): Project => normalizeProject({
   id: 'project_default',
   name: 'Mon Film 01',
   clips: [
@@ -272,6 +335,8 @@ const buildInitialDefaultProject = (): Project => ({
     { id: 'asset_3', name: 'logo_final.png', type: 'image', src: 'https://images.unsplash.com/photo-1472214103451-9374bd1c798e?auto=format&fit=crop&w=1000&q=80' },
   ],
   markers: EMPTY_MARKERS,
+  sequences: [],
+  activeSequenceId: MAIN_SEQUENCE_ID,
   projectSettings: { ...DEFAULT_SETTINGS },
   currentView: 'video',
 });
@@ -340,17 +405,21 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
   // quand elles changent, pour que canUndo/canRedo soient recalculés.
   const [, setHistoryVersion] = useState(0);
 
-  const currentHistory = historyRef.current.get(currentProjectId);
+  // Chaque timeline a sa propre pile : annuler n'affecte jamais une autre timeline
+  const historyScope = `${currentProjectId}#${currentProject.activeSequenceId}`;
+  const historyScopeRef = useRef(historyScope);
+  useLayoutEffect(() => { historyScopeRef.current = historyScope; }, [historyScope]);
+  const currentHistory = historyRef.current.get(historyScope);
   const canUndo = !!currentHistory && currentHistory.undo.length > 0;
   const canRedo = !!currentHistory && currentHistory.redo.length > 0;
 
   // Empile l'état courant avant une mutation. `discrete` = action ponctuelle
   // (suppression, duplication, ajout de piste) : toujours empilée et elle
   // ferme le geste en cours, contrairement aux drags qui sont regroupés.
-  const recordHistory = useCallback((projectId: string, discrete: boolean) => {
-    const project = projectsRef.current.find(p => p.id === projectId);
+  const recordHistory = useCallback((scope: string, discrete: boolean) => {
+    const project = projectsRef.current.find(p => p.id === currentProjectIdRef.current);
     if (!project) return;
-    const history = getHistory(historyRef.current, projectId);
+    const history = getHistory(historyRef.current, scope);
     const now = Date.now();
     const gesture = gestureRef.current;
     const continuation = !discrete && (gesture.active
@@ -389,9 +458,11 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     lastPushAtRef.current = 0;
   }, []);
 
-  const applySnapshot = useCallback((projectId: string, snapshot: HistorySnapshot) => {
+  const applySnapshot = useCallback((snapshot: HistorySnapshot) => {
     setProjects(prev => prev.map(p =>
-      p.id === projectId ? { ...p, clips: snapshot.clips, tracks: snapshot.tracks, markers: snapshot.markers } : p
+      p.id === currentProjectIdRef.current
+        ? syncActiveSequence({ ...p, clips: snapshot.clips, tracks: snapshot.tracks, markers: snapshot.markers })
+        : p
     ));
   }, []);
 
@@ -400,16 +471,16 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
   const cancelHistoryGesture = useCallback(() => {
     const g = gestureRef.current;
     if (g.active && g.pushed) {
-      const history = historyRef.current.get(currentProjectIdRef.current);
+      const history = historyRef.current.get(historyScopeRef.current);
       const snap = history?.undo.pop();
-      if (snap) applySnapshot(currentProjectIdRef.current, snap);
+      if (snap) applySnapshot(snap);
       setHistoryVersion(v => v + 1);
     }
     endHistoryGesture();
   }, [applySnapshot, endHistoryGesture]);
 
   const undo = useCallback(() => {
-    const history = historyRef.current.get(currentProjectId);
+    const history = historyRef.current.get(historyScope);
     const project = projectsRef.current.find(p => p.id === currentProjectId);
     if (!history || !project) return;
     const snapshot = history.undo.pop();
@@ -418,11 +489,11 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     lastPushAtRef.current = 0;
     gestureRef.current.pushed = false;
     setHistoryVersion(v => v + 1);
-    applySnapshot(currentProjectId, snapshot);
-  }, [currentProjectId, applySnapshot]);
+    applySnapshot(snapshot);
+  }, [currentProjectId, historyScope, applySnapshot]);
 
   const redo = useCallback(() => {
-    const history = historyRef.current.get(currentProjectId);
+    const history = historyRef.current.get(historyScope);
     const project = projectsRef.current.find(p => p.id === currentProjectId);
     if (!history || !project) return;
     const snapshot = history.redo.pop();
@@ -431,14 +502,14 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     lastPushAtRef.current = 0;
     gestureRef.current.pushed = false;
     setHistoryVersion(v => v + 1);
-    applySnapshot(currentProjectId, snapshot);
-  }, [currentProjectId, applySnapshot]);
+    applySnapshot(snapshot);
+  }, [currentProjectId, historyScope, applySnapshot]);
 
   // « Annuler » d'un toast : n'annule que si l'entrée empilée par l'action est
   // toujours au sommet (même projet, rien fait depuis), sinon ne fait rien.
   const undoIfTop = useCallback((token: HistoryToken): boolean => {
-    if (token.projectId !== currentProjectIdRef.current) return false;
-    const history = historyRef.current.get(token.projectId);
+    if (token.scope !== historyScopeRef.current) return false;
+    const history = historyRef.current.get(token.scope);
     if (!history || history.undo[history.undo.length - 1] !== token.snapshot) return false;
     undo();
     return true;
@@ -464,7 +535,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
 
   // --- HELPERS POUR MUTER LE PROJET COURANT ---
   const updateCurrentProject = useCallback((updater: (p: Project) => Project) => {
-    setProjects(prev => prev.map(p => p.id === currentProjectId ? updater(p) : p));
+    setProjects(prev => prev.map(p => p.id === currentProjectId ? syncActiveSequence(updater(p)) : p));
   }, [currentProjectId]);
 
   // Variante enregistrée dans l'historique undo/redo (clips, pistes et marqueurs).
@@ -473,13 +544,13 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
   // jeton rendu désigne le sommet de la pile = l'état d'avant l'action (même si
   // `unchanged` a évité un push : le sommet est alors déjà cet état).
   const updateCurrentProjectWithHistory = useCallback((updater: (p: Project) => Project, discrete = false): HistoryToken | null => {
-    recordHistory(currentProjectId, discrete);
+    recordHistory(historyScope, discrete);
     updateCurrentProject(updater);
     if (!discrete) return null;
-    const history = historyRef.current.get(currentProjectId);
+    const history = historyRef.current.get(historyScope);
     const top = history?.undo[history.undo.length - 1];
-    return top ? { projectId: currentProjectId, snapshot: top } : null;
-  }, [currentProjectId, recordHistory, updateCurrentProject]);
+    return top ? { scope: historyScope, snapshot: top } : null;
+  }, [historyScope, recordHistory, updateCurrentProject]);
 
   // Dernier état commité du projet courant (lecture synchrone, sans rendu)
   const getCurrent = useCallback((): Project | undefined =>
@@ -567,7 +638,8 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
   // L'id est calculé avant l'updater (StrictMode l'appelle deux fois) ; le
   // garde `some` rend l'updater idempotent.
   const addTrack = useCallback((type: 'video' | 'audio'): number => {
-    const id = nextTrackId(getCurrent()?.tracks ?? []);
+    const current = getCurrent();
+    const id = current ? nextProjectTrackId(current) : 1;
     updateCurrentProjectWithHistory(p => p.tracks.some(t => t.id === id) ? p : ({
       ...p,
       tracks: [...p.tracks, { id, type, name: trackName(type, p.tracks) }],
@@ -614,9 +686,10 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
   // dans le même updater = une seule entrée d'historique. `start` = première
   // place libre à partir de la position demandée.
   const insertClip = useCallback((clip: Omit<Clip, 'track'>, trackType: 'video' | 'audio'): { id: string; track: number } => {
-    const tracks = getCurrent()?.tracks ?? [];
+    const current = getCurrent();
+    const tracks = current?.tracks ?? [];
     const existing = tracks.find(t => t.type === trackType && !t.locked);
-    const trackId = existing ? existing.id : nextTrackId(tracks);
+    const trackId = existing ? existing.id : (current ? nextProjectTrackId(current) : 1);
     updateCurrentProjectWithHistory(p => {
       const nextTracks = p.tracks.some(t => t.id === trackId)
         ? p.tracks
@@ -766,6 +839,158 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     }));
   }, [updateCurrentProject]);
 
+  // --- TIMELINES DU PROJET (séquences) ---
+  // Hors historique : créer, renommer ou supprimer une timeline est une action
+  // de structure du projet, pas une édition de montage (chaque timeline a sa
+  // propre pile undo/redo).
+  const resetEditingState = useCallback(() => {
+    setSelection({ ids: [], primary: null });
+    currentTimeRef.current = 0;
+    setCurrentTime(0);
+    setIsPlaying(false);
+    lastPushAtRef.current = 0;
+    gestureRef.current = { active: false, pushed: false };
+  }, []);
+
+  const createSequence = useCallback((name?: string): string => {
+    const id = newId('seq');
+    const trimmed = name?.trim() ?? '';
+    updateCurrentProject(p => {
+      if (p.sequences.some(s => s.id === id)) return p;
+      // Ids de piste uniques dans tout le projet : les clips d'une timeline
+      // imbriquée conservent leur piste une fois dépliés.
+      let nextId = nextProjectTrackId(p);
+      const tracks: Track[] = [
+        { id: nextId++, type: 'text', name: 'Texte' },
+        { id: nextId++, type: 'video', name: 'Video 1' },
+        { id: nextId++, type: 'audio', name: 'Audio 1' },
+        ...SPECIAL_TRACKS.map(sp => ({ id: nextId++, type: 'audio' as const, name: sp.name, kind: sp.kind })),
+      ];
+      const used = new Set(p.sequences.map(s => s.name));
+      let n = p.sequences.length + 1;
+      let seqName = trimmed;
+      while (!seqName || used.has(seqName)) { seqName = `Timeline ${n}`; n += 1; }
+      const sequence: Sequence = { id, name: seqName, clips: [], tracks, markers: EMPTY_MARKERS };
+      return {
+        ...p,
+        sequences: [...p.sequences, sequence],
+        activeSequenceId: id,
+        clips: sequence.clips,
+        tracks: sequence.tracks,
+        markers: sequence.markers,
+      };
+    });
+    resetEditingState();
+    return id;
+  }, [updateCurrentProject, resetEditingState]);
+
+  const selectSequence = useCallback((id: string) => {
+    if (getCurrent()?.activeSequenceId === id) return;
+    updateCurrentProject(p => {
+      const target = p.sequences.find(s => s.id === id);
+      if (!target) return p;
+      // On range la timeline sortante ici : syncActiveSequence, appliqué après
+      // cet updater, recopierait sinon son contenu dans la nouvelle.
+      const sequences = p.sequences.map(s =>
+        s.id === p.activeSequenceId ? { ...s, clips: p.clips, tracks: p.tracks, markers: p.markers } : s
+      );
+      const next = sequences.find(s => s.id === id)!;
+      return {
+        ...p,
+        sequences,
+        activeSequenceId: id,
+        clips: next.clips,
+        tracks: next.tracks,
+        markers: next.markers,
+      };
+    });
+    resetEditingState();
+  }, [getCurrent, updateCurrentProject, resetEditingState]);
+
+  const renameSequence = useCallback((id: string, name: string) => {
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    updateCurrentProject(p => ({
+      ...p,
+      sequences: p.sequences.map(s => s.id === id ? { ...s, name: trimmed } : s),
+    }));
+  }, [updateCurrentProject]);
+
+  // Supprime la timeline et les clips qui l'insèrent dans les autres timelines.
+  // La dernière timeline d'un projet ne peut pas être supprimée.
+  const deleteSequence = useCallback((id: string) => {
+    const project = getCurrent();
+    if (!project || project.sequences.length <= 1) return;
+    const wasActive = project.activeSequenceId === id;
+    updateCurrentProject(p => {
+      if (p.sequences.length <= 1 || !p.sequences.some(s => s.id === id)) return p;
+      const stashed = p.sequences.map(s =>
+        s.id === p.activeSequenceId ? { ...s, clips: p.clips, tracks: p.tracks, markers: p.markers } : s
+      );
+      const sequences = stashed
+        .filter(s => s.id !== id)
+        .map(s => {
+          const clips = s.clips.filter(c => !(c.type === 'sequence' && c.sequenceRef === id));
+          return clips.length === s.clips.length ? s : { ...s, clips };
+        });
+      const active = sequences.find(s => s.id === p.activeSequenceId) ?? sequences[0];
+      return {
+        ...p,
+        sequences,
+        activeSequenceId: active.id,
+        clips: active.clips,
+        tracks: active.tracks,
+        markers: active.markers,
+      };
+    });
+    historyRef.current.delete(`${project.id}#${id}`);
+    setHistoryVersion(v => v + 1);
+    if (wasActive) resetEditingState();
+  }, [getCurrent, updateCurrentProject, resetEditingState]);
+
+  /**
+   * Insère une autre timeline comme un clip dans la timeline active. Refusé si
+   * cela créerait un cycle (une timeline ne peut pas se contenir elle-même).
+   */
+  const insertSequenceClip = useCallback((sequenceId: string, atPx: number): string | null => {
+    const project = getCurrent();
+    if (!project) return null;
+    const target = project.sequences.find(s => s.id === sequenceId);
+    if (!target) return null;
+    if (wouldCreateCycle(project.sequences, project.activeSequenceId, sequenceId)) return null;
+    const width = Math.max(MIN_CLIP_WIDTH_PX, sequenceDurationPx(target.clips));
+    const { id } = insertClip({
+      id: newId('seq_clip'),
+      name: target.name,
+      type: 'sequence',
+      src: '',
+      start: Math.max(0, atPx),
+      width,
+      sequenceRef: sequenceId,
+    }, 'video');
+    return id;
+  }, [getCurrent, insertClip]);
+
+  // Clips de la timeline active, timelines imbriquées dépliées : c'est ce que
+  // lisent le lecteur et l'export, qui n'ont pas à connaître l'imbrication.
+  const flatClips = useMemo(
+    () => flattenClips(currentProject.clips, currentProject.sequences),
+    [currentProject.clips, currentProject.sequences]
+  );
+
+  // Les clips dépliés gardent la piste de leur timeline d'origine : le lecteur
+  // et l'export ont besoin de toutes les pistes du projet pour les ordonner.
+  const allTracks = useMemo(() => {
+    const seen = new Set<number>();
+    const out: Track[] = [];
+    for (const t of currentProject.tracks) { seen.add(t.id); out.push(t); }
+    for (const s of currentProject.sequences) {
+      if (s.id === currentProject.activeSequenceId) continue;
+      for (const t of s.tracks) if (!seen.has(t.id)) { seen.add(t.id); out.push(t); }
+    }
+    return out;
+  }, [currentProject.tracks, currentProject.sequences, currentProject.activeSequenceId]);
+
   // --- MARQUEURS (discrets) ---
   const addMarker = useCallback((timePx: number): string => {
     const id = newId('marker');
@@ -883,7 +1108,9 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
       setCurrentTime(0);
       setIsPlaying(false);
     }
-    historyRef.current.delete(id);
+    for (const scope of [...historyRef.current.keys()]) {
+      if (scope.startsWith(`${id}#`)) historyRef.current.delete(scope);
+    }
     lastPushAtRef.current = 0;
     gestureRef.current = { active: false, pushed: false };
     setHistoryVersion(v => v + 1);
@@ -1049,10 +1276,12 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
         } else {
           try {
             // Filtre les blob: URLs (URL.createObjectURL) qui ne survivent pas à un reload
+            const stripBlob = (clips: Clip[]) => clips.map(c => c.src.startsWith('blob:') ? { ...c, src: '' } : c);
             const sanitized = snapshot.map(p => ({
               ...p,
               assets: p.assets.filter(a => !a.src.startsWith('blob:')),
-              clips: p.clips.map(c => c.src.startsWith('blob:') ? { ...c, src: '' } : c),
+              clips: stripBlob(p.clips),
+              sequences: p.sequences.map(seq => ({ ...seq, clips: stripBlob(seq.clips) })),
             }));
             localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify({
               projects: sanitized,
@@ -1243,6 +1472,9 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
       textTrackId: (currentProject.tracks.find(t => t.type === 'text')?.id ?? TEXT_TRACK_ID),
       assets: currentProject.assets, setAssets,
       markers: currentProject.markers, addMarker, deleteMarker, updateMarker,
+      sequences: currentProject.sequences, activeSequenceId: currentProject.activeSequenceId,
+      createSequence, selectSequence, renameSequence, deleteSequence, insertSequenceClip,
+      flatClips, allTracks,
       previewAsset, setPreviewAsset, scale: PX_PER_SEC_BASE * zoomLevel,
       projectSettings: currentProject.projectSettings, setProjectSettings,
       currentView: currentProject.currentView, setCurrentView,

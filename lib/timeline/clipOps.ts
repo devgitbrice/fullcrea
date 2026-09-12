@@ -234,3 +234,81 @@ export function findActiveAudioOnTrack(clips: Clip[], trackId: number, timePx: n
 export function isClipLocked(clip: Clip, tracks: Track[]): boolean {
   return !!tracks.find(t => t.id === clip.track)?.locked;
 }
+
+// --- TIMELINES IMBRIQUÉES (clips de type 'sequence') ---
+
+/** Durée d'une timeline (px) = fin du clip le plus tardif. */
+export function sequenceDurationPx(clips: Clip[]): number {
+  return clips.reduce((max, c) => Math.max(max, clipEnd(c)), 0);
+}
+
+/**
+ * Vrai si insérer `refId` dans la timeline `hostId` créerait un cycle
+ * (`refId` contient déjà `hostId`, directement ou indirectement).
+ */
+export function wouldCreateCycle(
+  sequences: { id: string; clips: Clip[] }[],
+  hostId: string,
+  refId: string,
+  seen: Set<string> = new Set(),
+): boolean {
+  if (refId === hostId) return true;
+  if (seen.has(refId)) return false;
+  seen.add(refId);
+  const seq = sequences.find(s => s.id === refId);
+  if (!seq) return false;
+  return seq.clips.some(c =>
+    c.type === 'sequence' && !!c.sequenceRef && wouldCreateCycle(sequences, hostId, c.sequenceRef, seen)
+  );
+}
+
+const MAX_NEST_DEPTH = 8;
+
+/**
+ * Remplace les clips 'sequence' par le contenu de la timeline référencée,
+ * replacé dans le temps de la timeline hôte et rogné à la fenêtre du clip.
+ * Utilisé par le lecteur et par l'export : ni l'un ni l'autre ne connaît les
+ * timelines imbriquées, ils ne voient que des clips ordinaires.
+ */
+export function flattenClips(
+  clips: Clip[],
+  sequences: { id: string; clips: Clip[] }[],
+  depth = 0,
+): Clip[] {
+  if (depth > MAX_NEST_DEPTH) return [];
+  // Cas courant : aucune timeline imbriquée, on garde le tableau d'origine
+  // (identité préservée pour les mémos du lecteur).
+  if (!clips.some(c => c.type === 'sequence')) return clips;
+  const out: Clip[] = [];
+  for (const clip of clips) {
+    if (clip.type !== 'sequence') {
+      out.push(clip);
+      continue;
+    }
+    const seq = clip.sequenceRef ? sequences.find(s => s.id === clip.sequenceRef) : undefined;
+    if (!seq) continue;
+    const inner = flattenClips(seq.clips, sequences, depth + 1);
+    const windowStart = clip.start;
+    const windowEnd = clipEnd(clip);
+    // Décalage : le point d'entrée du clip conteneur se lit dans le temps interne
+    const shift = clip.start - (clip.offset ?? 0);
+    for (const c of inner) {
+      const start = c.start + shift;
+      const end = start + c.width;
+      const visibleStart = Math.max(start, windowStart);
+      const visibleEnd = Math.min(end, windowEnd);
+      if (visibleEnd - visibleStart < 1e-6) continue;
+      const trimmedLeft = visibleStart - start;
+      out.push({
+        ...c,
+        id: `${clip.id}/${c.id}`,
+        start: visibleStart,
+        width: visibleEnd - visibleStart,
+        offset: hasOffset(c) ? (c.offset ?? 0) + trimmedLeft : c.offset,
+        muted: c.muted || clip.muted,
+        volume: (c.volume ?? 1) * (clip.volume ?? 1),
+      });
+    }
+  }
+  return out;
+}

@@ -5,6 +5,7 @@ import type { Clip, Track } from './types';
 import {
   splitClip, computeRipple, overlapsOnTrack, findFreeStart, findFreeGroupDelta,
   neighborBounds, findActiveVisual, findActiveAudio, mediaTimeSec, clipEdges, isClipLocked, newId, trimBounds, clamp,
+  flattenClips, wouldCreateCycle, sequenceDurationPx,
 } from './clipOps.ts';
 
 const clip = (id: string, track: number, start: number, width: number, extra: Partial<Clip> = {}): Clip => ({
@@ -170,4 +171,70 @@ test('trimBounds + clamp : un point d\'aimant au-delà des bornes est ramené', 
   assert.equal(clamp(50, b.minStart, b.maxStart), 90);      // aimant à 50 → offset 0 (start 90)
   assert.equal(clamp(250, b.minEnd, b.maxEnd), 170);        // aimant à 250 → voisin de droite
   assert.equal(clamp(140, b.minStart, b.maxStart), 140);
+});
+
+// --- TIMELINES IMBRIQUÉES ---
+
+const seqClip = (id: string, ref: string, start: number, width: number, extra: Partial<Clip> = {}): Clip => ({
+  id, name: ref, type: 'sequence', track: 1, start, width, src: '', sequenceRef: ref, ...extra,
+});
+
+test('flattenClips : sans clip de séquence, le tableau d\'origine est conservé', () => {
+  const clips = [clip('a', 1, 0, 100)];
+  assert.equal(flattenClips(clips, []), clips);
+});
+
+test('flattenClips : le contenu de la timeline imbriquée est replacé et rogné', () => {
+  const inner = [clip('i1', 5, 0, 60), clip('i2', 5, 60, 60)];
+  const host = [seqClip('s', 'seq_b', 100, 90)];
+  const flat = flattenClips(host, [{ id: 'seq_b', clips: inner }]);
+  assert.equal(flat.length, 2);
+  // i1 : 0..60 interne → 100..160 ; i2 : 60..120 → 160..220, rogné à 190
+  assert.deepEqual(flat.map(c => [c.start, c.width]), [[100, 60], [160, 30]]);
+  // La piste d'origine est conservée (ids de piste uniques dans le projet)
+  assert.equal(flat[0].track, 5);
+});
+
+test('flattenClips : le point d\'entrée du clip conteneur décale le contenu', () => {
+  const inner = [clip('i', 5, 0, 120)];
+  const host = [seqClip('s', 'seq_b', 0, 60, { offset: 30 })];
+  const flat = flattenClips(host, [{ id: 'seq_b', clips: inner }]);
+  // On lit la timeline imbriquée à partir de 30 : le clip démarre à 0 avec offset 30
+  assert.deepEqual(flat.map(c => [c.start, c.width, c.offset]), [[0, 60, 30]]);
+});
+
+test('flattenClips : muet et volume du conteneur se propagent, imbrication récursive', () => {
+  const a = [clip('leaf', 5, 0, 100, { volume: 0.5 })];
+  const b = [seqClip('sa', 'seq_a', 0, 100)];
+  const host = [seqClip('sb', 'seq_b', 0, 100, { muted: true, volume: 0.5 })];
+  const flat = flattenClips(host, [{ id: 'seq_a', clips: a }, { id: 'seq_b', clips: b }]);
+  assert.equal(flat.length, 1);
+  assert.equal(flat[0].muted, true);
+  assert.equal(flat[0].volume, 0.25);
+});
+
+test('flattenClips : référence inconnue ignorée, profondeur bornée', () => {
+  assert.deepEqual(flattenClips([seqClip('s', 'absente', 0, 50)], []), []);
+  // Cycle a → b → a : la profondeur maximale arrête la récursion sans boucler
+  const sequences = [
+    { id: 'a', clips: [seqClip('sb', 'b', 0, 100)] },
+    { id: 'b', clips: [seqClip('sa', 'a', 0, 100)] },
+  ];
+  assert.deepEqual(flattenClips([seqClip('root', 'a', 0, 100)], sequences), []);
+});
+
+test('wouldCreateCycle : directe, indirecte et cas sain', () => {
+  const sequences = [
+    { id: 'a', clips: [seqClip('x', 'b', 0, 10)] },
+    { id: 'b', clips: [] as Clip[] },
+    { id: 'c', clips: [] as Clip[] },
+  ];
+  assert.equal(wouldCreateCycle(sequences, 'a', 'a'), true);   // elle-même
+  assert.equal(wouldCreateCycle(sequences, 'b', 'a'), true);   // a contient déjà b
+  assert.equal(wouldCreateCycle(sequences, 'a', 'c'), false);
+});
+
+test('sequenceDurationPx : fin du clip le plus tardif', () => {
+  assert.equal(sequenceDurationPx([clip('a', 1, 0, 100), clip('b', 2, 300, 50)]), 350);
+  assert.equal(sequenceDurationPx([]), 0);
 });

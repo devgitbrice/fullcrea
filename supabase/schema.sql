@@ -7,7 +7,7 @@
 --   [ ] Ré-exécuter ce fichier ENTIER après chaque mise à jour de l'app :
 --       la section 5 bis (migrations) ajoute les colonnes récentes
 --       (offset_px, source_duration_px, volume, muted, hidden, locked, markers,
---       kind, tts).
+--       kind, tts, sequences, active_sequence_id, sequence_id, sequence_ref).
 --       Sans elles, l'insert échoue « column … does not exist » et l'indicateur
 --       de sauvegarde passe en erreur.
 --   [ ] Vérifier que le bucket 'fullcrea-assets' est Public (section 7).
@@ -155,6 +155,34 @@ ALTER TABLE fullcrea_tracks
   ADD COLUMN IF NOT EXISTS kind TEXT CHECK (kind IS NULL OR kind IN ('voiceover', 'music', 'mic'));
 ALTER TABLE fullcrea_clips
   ADD COLUMN IF NOT EXISTS tts JSONB;
+
+-- Timelines multiples par projet (séquences) et timelines imbriquées :
+-- chaque piste et chaque clip appartient à une timeline ; un clip de type
+-- 'sequence' référence la timeline qu'il insère.
+ALTER TABLE fullcrea_projects
+  ADD COLUMN IF NOT EXISTS sequences           JSONB NOT NULL DEFAULT '[]'::jsonb,
+  ADD COLUMN IF NOT EXISTS active_sequence_id  TEXT;
+ALTER TABLE fullcrea_tracks
+  ADD COLUMN IF NOT EXISTS sequence_id TEXT NOT NULL DEFAULT 'seq_main';
+ALTER TABLE fullcrea_clips
+  ADD COLUMN IF NOT EXISTS sequence_id  TEXT NOT NULL DEFAULT 'seq_main',
+  ADD COLUMN IF NOT EXISTS sequence_ref TEXT;
+
+-- Le type 'sequence' s'ajoute aux types de clip existants
+DO $$
+BEGIN
+    ALTER TABLE fullcrea_clips DROP CONSTRAINT IF EXISTS fullcrea_clips_type_check;
+    ALTER TABLE fullcrea_clips
+        ADD CONSTRAINT fullcrea_clips_type_check
+        CHECK (type IN ('video', 'audio', 'image', 'text', 'sequence'));
+EXCEPTION WHEN duplicate_object THEN
+    NULL; -- déjà appliqué
+END $$;
+
+CREATE INDEX IF NOT EXISTS idx_fullcrea_tracks_sequence
+    ON fullcrea_tracks(project_id, sequence_id);
+CREATE INDEX IF NOT EXISTS idx_fullcrea_clips_sequence
+    ON fullcrea_clips(project_id, sequence_id);
 
 
 -- =====================================================

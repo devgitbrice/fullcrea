@@ -5,7 +5,7 @@ import {
   useRef, DragEvent, useState, useEffect, useLayoutEffect, PointerEvent as ReactPointerEvent,
   MouseEvent as ReactMouseEvent, KeyboardEvent as ReactKeyboardEvent, useCallback, useMemo, type ReactNode,
 } from 'react';
-import { Music, Plus, Video, AudioLines, Type, X, MousePointerClick, MessageSquareText } from 'lucide-react';
+import { Music, Plus, Video, AudioLines, Type, X, MousePointerClick, MessageSquareText, Film } from 'lucide-react';
 import { useProject, Clip, PX_PER_SEC_BASE, MIN_CLIP_WIDTH_PX } from '@/components/ProjectContext';
 import {
   newId, neighborBounds, isClipLocked, overlapsOnTrack, findFreeStart, clipEdges, trimBounds, clamp,
@@ -142,6 +142,7 @@ export default function Timeline() {
     insertClipOnTrack,
     uploadAssetFile,
     setAssets,
+    selectSequence,
   } = useProject();
   const { toast } = useToast();
 
@@ -1045,6 +1046,7 @@ export default function Timeline() {
 
   // --- STYLES & FILTRES ---
   const getClipStyle = useCallback((type: string) => {
+    if (type === 'sequence') return "bg-indigo-600/40 border-indigo-400 text-indigo-100";
     if (type === 'audio') return "bg-green-600/40 border-green-500 text-green-100";
     if (type === 'image') return "bg-purple-600/40 border-purple-500 text-purple-100";
     if (type === 'text') return "bg-yellow-600/40 border-yellow-500 text-yellow-100";
@@ -1057,7 +1059,9 @@ export default function Timeline() {
     return text || clip.name;
   };
 
-  const getClipTitle = (clip: Clip) => (clip.tts ? 'Double-clic pour modifier le texte — ' : '') +
+  const getClipTitle = (clip: Clip) =>
+    (clip.tts ? 'Double-clic pour modifier le texte — ' : '') +
+    (clip.type === 'sequence' ? 'Timeline imbriquée, double-clic pour l\'ouvrir — ' : '') +
     `${getClipLabel(clip)} — ${formatPx(clip.start)} → ${formatPx(clip.start + clip.width)} (${formatPx(clip.width)})`;
 
   // Quels clips appartiennent à quelle piste — filtre par type-cohérence
@@ -1292,8 +1296,15 @@ export default function Timeline() {
                       handleClipClick(e, clip);
                     }}
                     onDoubleClick={(e) => {
+                      if (locked) return;
+                      // Timeline imbriquée : double-clic = l'ouvrir
+                      if (clip.type === 'sequence' && clip.sequenceRef) {
+                        e.stopPropagation();
+                        selectSequence(clip.sequenceRef);
+                        return;
+                      }
                       // Voix off générée : double-clic = modifier le texte et régénérer
-                      if (!clip.tts || locked) return;
+                      if (!clip.tts) return;
                       e.stopPropagation();
                       setVoiceOverEditor({ trackId: clip.track, clip });
                     }}
@@ -1326,9 +1337,22 @@ export default function Timeline() {
                       <AudioWaveform
                         src={clip.src}
                         durationSeconds={clip.width / PX_PER_SEC_BASE}
+                        offsetSeconds={(clip.offset ?? 0) / PX_PER_SEC_BASE}
                       />
                     )}
+                    {/* Vidéo : sa bande son s'affiche en bas du clip (bandeau sombre) */}
+                    {clip.type === 'video' && clip.src && (
+                      <div className="absolute inset-x-0 bottom-0 h-1/3 bg-black/30 pointer-events-none">
+                        <AudioWaveform
+                          src={clip.src}
+                          durationSeconds={clip.width / PX_PER_SEC_BASE}
+                          offsetSeconds={(clip.offset ?? 0) / PX_PER_SEC_BASE}
+                          color="rgba(191, 219, 254, 0.9)"
+                        />
+                      </div>
+                    )}
                     <div className="relative z-[1] flex items-center min-w-0 w-full">
+                      {clip.type === 'sequence' && <Film size={12} className="mr-2 shrink-0 opacity-80" aria-label="Timeline imbriquée — double-clic pour l'ouvrir" />}
                       {clip.type === 'audio' && (clip.tts
                         ? <MessageSquareText size={12} className="mr-2 shrink-0 opacity-80" aria-label="Voix off générée — double-clic pour modifier" />
                         : <Music size={12} className="mr-2 shrink-0 opacity-70" />)}

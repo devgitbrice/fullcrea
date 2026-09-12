@@ -53,11 +53,14 @@ async function loadPeaks(src: string): Promise<Peaks> {
 interface Props {
   src: string;
   durationSeconds: number; // Durée du clip à afficher (peut être < durée totale du fichier source)
+  offsetSeconds?: number;  // Point d'entrée dans la source (clip rogné à gauche)
   color?: string;
   className?: string;
 }
 
-export default function AudioWaveform({ src, durationSeconds, color = 'rgba(134, 239, 172, 0.85)', className = '' }: Props) {
+export default function AudioWaveform({
+  src, durationSeconds, offsetSeconds = 0, color = 'rgba(134, 239, 172, 0.85)', className = '',
+}: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const [data, setData] = useState<Peaks | null>(null);
@@ -104,16 +107,18 @@ export default function AudioWaveform({ src, durationSeconds, color = 'rgba(134,
     ctx.scale(dpr, dpr);
     ctx.clearRect(0, 0, cssW, cssH);
 
-    // Portion des pics à afficher = ratio entre la durée du clip et la durée totale du fichier source
-    const ratio = data.duration > 0 ? Math.min(1, durationSeconds / data.duration) : 1;
-    const peaksToShow = Math.max(1, Math.floor(data.peaks.length * ratio));
-    const samplesPerPx = peaksToShow / cssW;
+    // Fenêtre de pics affichée = [offset, offset + durée du clip] dans la source
+    const total = data.duration > 0 ? data.duration : durationSeconds;
+    const perSecond = data.peaks.length / (total || 1);
+    const firstPeak = Math.max(0, Math.floor(offsetSeconds * perSecond));
+    const peakCount = Math.max(1, Math.min(data.peaks.length - firstPeak, Math.floor(durationSeconds * perSecond)));
+    const samplesPerPx = peakCount / cssW;
     const mid = cssH / 2;
 
     ctx.fillStyle = color;
     for (let x = 0; x < cssW; x++) {
-      const startIdx = Math.floor(x * samplesPerPx);
-      const endIdx = Math.min(peaksToShow, Math.floor((x + 1) * samplesPerPx) + 1);
+      const startIdx = firstPeak + Math.floor(x * samplesPerPx);
+      const endIdx = Math.min(firstPeak + peakCount, firstPeak + Math.floor((x + 1) * samplesPerPx) + 1);
       let max = 0;
       for (let i = startIdx; i < endIdx; i++) {
         if (data.peaks[i] > max) max = data.peaks[i];
@@ -121,7 +126,7 @@ export default function AudioWaveform({ src, durationSeconds, color = 'rgba(134,
       const h = Math.max(1, max * (cssH - 2));
       ctx.fillRect(x, mid - h / 2, 1, h);
     }
-  }, [data, durationSeconds, color, containerSize]);
+  }, [data, durationSeconds, offsetSeconds, color, containerSize]);
 
   return (
     <div ref={containerRef} className={`absolute inset-0 pointer-events-none ${className}`}>

@@ -1,23 +1,68 @@
 "use client";
 
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useProject } from '@/components/ProjectContext';
-import { Settings, Monitor } from 'lucide-react';
+import { Settings, Monitor, Pencil } from 'lucide-react';
 import ExportButton from './ExportButton';
 import SaveIndicator from './SaveIndicator';
 import SettingsModal, { FORMAT_PRESETS, isSamePreset } from './SettingsModal';
 import UserMenu from './UserMenu';
 
 export default function ProjectHeader() {
-  const { projectSettings, setProjectSettings, currentProject } = useProject();
+  const { projectSettings, setProjectSettings, currentProject, renameProject } = useProject();
   const [settingsOpen, setSettingsOpen] = useState(false);
+
+  // Renommage du projet : clic sur le titre (ou sur le crayon) → champ inline.
+  // Entrée et perte de focus valident, Échap annule.
+  const [renaming, setRenaming] = useState(false);
+  const [draft, setDraft] = useState(currentProject.name);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => { if (renaming) inputRef.current?.select(); }, [renaming]);
+
+  const startRename = () => {
+    setDraft(currentProject.name);
+    setRenaming(true);
+  };
+
+  const commitRename = () => {
+    if (!renaming) return;
+    setRenaming(false);
+    const trimmed = draft.trim();
+    if (trimmed && trimmed !== currentProject.name) renameProject(currentProject.id, trimmed);
+  };
 
   return (
     <div className="min-h-14 bg-gray-950 border-b border-gray-800 flex flex-wrap items-center justify-between gap-x-4 gap-y-2 px-6 py-2 select-none">
 
       <div className="flex flex-wrap items-center gap-2 text-gray-400 text-sm min-w-0">
         <Monitor size={16} className="shrink-0" />
-        <span className="font-medium text-gray-200 truncate max-w-[16rem]" title={currentProject.name}>{currentProject.name}</span>
+        {renaming ? (
+          <input
+            ref={inputRef}
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onBlur={commitRename}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') commitRename();
+              if (e.key === 'Escape') { e.stopPropagation(); setRenaming(false); }
+            }}
+            aria-label="Nom du projet"
+            maxLength={120}
+            className="w-48 bg-gray-900 border border-blue-600 rounded px-2 py-0.5 text-sm font-medium text-gray-100 focus:outline-none"
+          />
+        ) : (
+          <button
+            type="button"
+            onClick={startRename}
+            title="Renommer le projet"
+            aria-label={`Renommer le projet (${currentProject.name})`}
+            className="group flex items-center gap-1.5 min-w-0 px-1 py-0.5 -mx-1 rounded hover:bg-gray-900 transition [@media(pointer:coarse)]:min-h-11"
+          >
+            <span className="font-medium text-gray-200 truncate max-w-[16rem]">{currentProject.name}</span>
+            <Pencil size={12} className="shrink-0 text-gray-600 group-hover:text-gray-300 transition" />
+          </button>
+        )}
         <span className="text-gray-600">/</span>
         <span>Édition</span>
         <SaveIndicator />

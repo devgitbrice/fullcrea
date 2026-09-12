@@ -20,7 +20,8 @@ export interface ImageTransform {
 export interface Clip {
   id: string;
   name: string;
-  type: 'video' | 'audio' | 'image' | 'text';
+  // 'sequence' = une autre timeline du projet insérée comme un bloc
+  type: 'video' | 'audio' | 'image' | 'text' | 'sequence';
   track: number;
   start: number;            // px timeline (zoom 1), ≥ 0
   width: number;            // px, ≥ MIN_CLIP_WIDTH_PX
@@ -32,6 +33,8 @@ export interface Clip {
   transform?: ImageTransform;
   // Voix off générée : texte et voix d'origine, pour rééditer et régénérer
   tts?: { text: string; voice: string };
+  // Clip de type 'sequence' : id de la timeline insérée
+  sequenceRef?: string;
   text?: string;
   fontSize?: number;
   fontFamily?: string;
@@ -74,13 +77,30 @@ export interface ProjectSettings {
   fps: number;
 }
 
-export interface Project {
+/**
+ * Une timeline du projet. Un projet en contient au moins une ; une timeline
+ * peut être insérée dans une autre sous forme de clip `type: 'sequence'`.
+ */
+export interface Sequence {
   id: string;
   name: string;
   clips: Clip[];
   tracks: Track[];
-  assets: Asset[];
+  markers: Marker[];
+}
+
+export interface Project {
+  id: string;
+  name: string;
+  // Données de la timeline ACTIVE (miroir de l'entrée correspondante de
+  // `sequences`, tenu à jour à chaque mutation : `sequences` fait foi).
+  clips: Clip[];
+  tracks: Track[];
   markers: Marker[];   // requis en mémoire (normalisé à l'hydratation : EMPTY_MARKERS si absent)
+  // Toutes les timelines du projet, la première étant la principale
+  sequences: Sequence[];
+  activeSequenceId: string;
+  assets: Asset[];
   projectSettings: ProjectSettings;
   currentView: ViewMode;
 }

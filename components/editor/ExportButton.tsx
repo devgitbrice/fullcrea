@@ -29,7 +29,8 @@ function formatSeconds(seconds: number): string {
 }
 
 export default function ExportButton() {
-  const { clips, tracks, currentProject, projectSettings, projectDurationPx } = useProject();
+  // Export de la timeline active, timelines imbriquées dépliées
+  const { flatClips: clips, allTracks: tracks, currentProject, projectSettings, projectDurationPx } = useProject();
   const { toast } = useToast();
   const [open, setOpen] = useState(false);
   const [resolution, setResolution] = useState<ResolutionId>('hd');
