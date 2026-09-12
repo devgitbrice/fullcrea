@@ -2,15 +2,38 @@
 
 import { SupabaseClient } from '@supabase/supabase-js';
 import { STORAGE_BUCKET } from './client';
+import type { Clip, Marker, ProjectSettings, Sequence, Track } from '@/lib/timeline/types';
+import { EMPTY_MARKERS } from '@/lib/timeline/types';
 
 export interface Share {
   id: string;
   title: string;
-  src: string;
+  /** MP4 rendu (partage figé) ; null pour un partage en direct */
+  src: string | null;
   width: number;
   height: number;
   durationSec: number | null;
+  /** true : le lien rejoue le projet et suit ses modifications */
+  live: boolean;
+  /** Timeline partagée (partage en direct) */
+  sequenceId: string | null;
   createdAt: string | null;
+}
+
+/** Montage lu par le lecteur public d'un partage en direct. */
+export interface LiveMontage {
+  title: string;
+  settings: ProjectSettings;
+  sequences: Sequence[];
+  /** Timeline à jouer (celle du partage, sinon la première) */
+  sequenceId: string;
+  /** Horodatage de la dernière sauvegarde : sert à détecter les changements */
+  updatedAt: string | null;
+}
+
+export interface SharePayload {
+  share: Share;
+  montage: LiveMontage | null;
 }
 
 const SHARES_TABLE = 'fullcrea_shares';
@@ -67,6 +90,7 @@ export async function createShare(
     width,
     height,
     duration_sec: durationSec,
+    live: false,
   });
   if (error) {
     // La ligne n'a pas pu être créée : on ne laisse pas le fichier orphelin
@@ -74,25 +98,165 @@ export async function createShare(
     throw shareError('Création du partage échouée', error);
   }
 
-  return { id, title, src, width, height, durationSec, createdAt: null };
+  return { id, title, src, width, height, durationSec, live: false, sequenceId: null, createdAt: null };
 }
 
-/** Lit un partage par son id (lecture publique : aucune session requise). */
-export async function fetchShare(supabase: SupabaseClient, id: string): Promise<Share | null> {
-  const { data, error } = await supabase
-    .from(SHARES_TABLE)
-    .select('id, title, src, width, height, duration_sec, created_at')
-    .eq('id', id)
-    .maybeSingle();
-  if (error) throw shareError('Lecture du partage échouée', error);
-  if (!data) return null;
+interface CreateLiveShareInput {
+  projectId: string;
+  sequenceId: string;
+  title: string;
+  width: number;
+  height: number;
+  durationSec: number;
+}
+
+/**
+ * Crée un partage EN DIRECT : aucun rendu, le lien rejoue la timeline du
+ * projet et reflète les modifications au fil des sauvegardes.
+ */
+export async function createLiveShare(
+  supabase: SupabaseClient,
+  userId: string,
+  { projectId, sequenceId, title, width, height, durationSec }: CreateLiveShareInput,
+): Promise<Share> {
+  const id = newShareId();
+  const { error } = await supabase.from(SHARES_TABLE).insert({
+    id,
+    user_id: userId,
+    project_id: projectId,
+    sequence_id: sequenceId,
+    title,
+    src: null,
+    live: true,
+    width,
+    height,
+    duration_sec: durationSec,
+  });
+  if (error) throw shareError('Création du partage échouée', error);
+  return { id, title, src: null, width, height, durationSec, live: true, sequenceId, createdAt: null };
+}
+
+// --- Lecture publique ---
+
+interface TrackRow {
+  sequence_id: string | null; track_index: number;
+  type: Track['type']; name: string; kind?: Track['kind'] | null;
+  muted?: boolean | null; hidden?: boolean | null; locked?: boolean | null;
+}
+
+interface ClipRow {
+  sequence_id: string | null; id: string; name: string; type: Clip['type'];
+  track_index: number; start_px: number; width_px: number; src: string;
+  offset_px?: number | null; source_duration_px?: number | null;
+  volume?: number | null; muted?: boolean | null;
+  tts?: Clip['tts'] | null; sequence_ref?: string | null;
+  transform?: Clip['transform'] | null;
+  text_content?: string | null; font_size?: number | null;
+  font_family?: string | null; text_color?: string | null;
+}
+
+const MAIN_SEQUENCE_ID = 'seq_main';
+
+function toTrack(t: TrackRow): Track {
   return {
-    id: data.id,
-    title: data.title,
-    src: data.src,
-    width: data.width,
-    height: data.height,
-    durationSec: data.duration_sec ?? null,
-    createdAt: data.created_at ?? null,
+    id: t.track_index,
+    type: t.type,
+    name: t.name,
+    muted: t.muted || undefined,
+    hidden: t.hidden || undefined,
+    locked: t.locked || undefined,
+    kind: t.kind ?? undefined,
+  };
+}
+
+function toClip(c: ClipRow): Clip {
+  return {
+    id: c.id,
+    name: c.name,
+    type: c.type,
+    track: c.track_index,
+    start: c.start_px,
+    width: c.width_px,
+    src: c.src,
+    offset: c.offset_px || undefined,
+    sourceDuration: c.source_duration_px ?? undefined,
+    volume: c.volume ?? undefined,
+    muted: c.muted || undefined,
+    tts: c.tts ?? undefined,
+    sequenceRef: c.sequence_ref ?? undefined,
+    transform: c.transform ?? undefined,
+    text: c.text_content ?? undefined,
+    fontSize: c.font_size ?? undefined,
+    fontFamily: c.font_family ?? undefined,
+    textColor: c.text_color ?? undefined,
+  };
+}
+
+/**
+ * Lit un partage et, s'il est en direct, le montage courant du projet.
+ * Passe par une fonction SECURITY DEFINER : seules les données du partage
+ * demandé sortent, le projet reste privé.
+ */
+export async function fetchSharePayload(supabase: SupabaseClient, id: string): Promise<SharePayload | null> {
+  const { data, error } = await supabase.rpc('fullcrea_share_payload', { share_id: id });
+  if (error) throw shareError('Lecture du partage échouée', error);
+  if (!data || !data.share) return null;
+
+  const raw = data.share as {
+    id: string; title: string; live: boolean; src: string | null;
+    width: number; height: number; durationSec: number | null; sequenceId: string | null;
+  };
+  const share: Share = {
+    id: raw.id,
+    title: raw.title,
+    src: raw.src,
+    width: raw.width,
+    height: raw.height,
+    durationSec: raw.durationSec ?? null,
+    live: !!raw.live,
+    sequenceId: raw.sequenceId ?? null,
+    createdAt: null,
+  };
+
+  const project = data.project as {
+    name: string;
+    sequences: { id: string; name: string; markers?: Marker[] }[] | null;
+    activeSequenceId: string | null;
+    settings: ProjectSettings;
+    tracks: TrackRow[];
+    clips: ClipRow[];
+  } | null;
+
+  if (!share.live || !project) return { share, montage: null };
+
+  const metas = Array.isArray(project.sequences) && project.sequences.length > 0
+    ? project.sequences
+    : [{ id: MAIN_SEQUENCE_ID, name: 'Timeline 1', markers: [] as Marker[] }];
+
+  const sequences: Sequence[] = metas.map((meta) => ({
+    id: meta.id,
+    name: meta.name,
+    tracks: (project.tracks ?? [])
+      .filter((t) => (t.sequence_id ?? MAIN_SEQUENCE_ID) === meta.id)
+      .map(toTrack),
+    clips: (project.clips ?? [])
+      .filter((c) => (c.sequence_id ?? MAIN_SEQUENCE_ID) === meta.id)
+      .map(toClip),
+    markers: Array.isArray(meta.markers) && meta.markers.length > 0 ? meta.markers : (EMPTY_MARKERS as Marker[]),
+  }));
+
+  const sequenceId = sequences.some((s) => s.id === share.sequenceId)
+    ? share.sequenceId!
+    : (sequences.find((s) => s.id === project.activeSequenceId)?.id ?? sequences[0].id);
+
+  return {
+    share,
+    montage: {
+      title: project.name || share.title,
+      settings: project.settings,
+      sequences,
+      sequenceId,
+      updatedAt: (data.updatedAt as string | null) ?? null,
+    },
   };
 }

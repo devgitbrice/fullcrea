@@ -1,10 +1,7 @@
 import type { Metadata } from "next";
 import { Inter } from "next/font/google";
 import "./globals.css";
-import UpdateNotifier from "@/components/UpdateNotifier";
-import LastUpdateBadge from "@/components/LastUpdateBadge";
-import ExternalLinkButton from "@/components/ExternalLinkButton";
-import { Music, Scissors } from "lucide-react";
+import EditorChrome from "@/components/EditorChrome";
 
 const inter = Inter({ subsets: ["latin"] });
 
@@ -36,12 +33,7 @@ export default function RootLayout({
         }}
       >
         {children}
-        <div className="fixed right-4 top-4 z-50 flex items-center gap-2">
-          <ExternalLinkButton href="https://audio.gennn.live" label="Audio" icon={<Music size={16} />} />
-          <ExternalLinkButton href="https://cut.gennn.live" label="Cut" icon={<Scissors size={16} />} />
-          <LastUpdateBadge />
-        </div>
-        <UpdateNotifier />
+        <EditorChrome />
       </body>
     </html>
   );

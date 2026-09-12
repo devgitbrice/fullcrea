@@ -8,7 +8,8 @@
 --       la section 5 bis (migrations) ajoute les colonnes récentes
 --       (offset_px, source_duration_px, volume, muted, hidden, locked, markers,
 --       kind, tts, sequences, active_sequence_id, sequence_id, sequence_ref)
---       et crée la table fullcrea_shares (partage par lien et intégration).
+--       crée la table fullcrea_shares (partage par lien et intégration) et la
+--       fonction fullcrea_share_payload (lecture publique d'un partage en direct).
 --       Sans elles, l'insert échoue « column … does not exist » et l'indicateur
 --       de sauvegarde passe en erreur.
 --   [ ] Vérifier que le bucket 'fullcrea-assets' est Public (section 7).
@@ -225,6 +226,67 @@ CREATE POLICY fullcrea_shares_update_own ON fullcrea_shares
     FOR UPDATE USING (auth.uid() = user_id);
 CREATE POLICY fullcrea_shares_delete_own ON fullcrea_shares
     FOR DELETE USING (auth.uid() = user_id);
+
+-- Partage EN DIRECT : le lien suit le projet au lieu de pointer un MP4 figé.
+-- `live` = true → pas de fichier rendu, le lecteur rejoue la timeline.
+ALTER TABLE fullcrea_shares
+  ADD COLUMN IF NOT EXISTS live        BOOLEAN NOT NULL DEFAULT false,
+  ADD COLUMN IF NOT EXISTS sequence_id TEXT;
+ALTER TABLE fullcrea_shares ALTER COLUMN src DROP NOT NULL;
+
+
+-- =====================================================
+-- 5 quater. fullcrea_share_payload — lecture publique d'un partage
+--   SECURITY DEFINER : la fonction contourne le RLS pour renvoyer le montage
+--   d'un partage EN DIRECT, mais uniquement à qui connaît l'id du partage.
+--   Les tables du projet restent, elles, privées à leur propriétaire.
+-- =====================================================
+CREATE OR REPLACE FUNCTION fullcrea_share_payload(share_id TEXT)
+RETURNS JSONB
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = public
+AS $$
+    SELECT jsonb_build_object(
+        'share', jsonb_build_object(
+            'id', s.id,
+            'title', s.title,
+            'live', s.live,
+            'src', s.src,
+            'width', s.width,
+            'height', s.height,
+            'durationSec', s.duration_sec,
+            'sequenceId', s.sequence_id
+        ),
+        'updatedAt', CASE WHEN s.live THEN p.updated_at ELSE NULL END,
+        'project', CASE WHEN s.live AND p.id IS NOT NULL THEN jsonb_build_object(
+            'name', p.name,
+            'sequences', p.sequences,
+            'activeSequenceId', p.active_sequence_id,
+            'settings', jsonb_build_object(
+                'width',  COALESCE(ps.width, 1920),
+                'height', COALESCE(ps.height, 1080),
+                'fps',    COALESCE(ps.fps, 30)
+            ),
+            'tracks', COALESCE((
+                SELECT jsonb_agg(to_jsonb(t) ORDER BY t.track_index)
+                FROM fullcrea_tracks t WHERE t.project_id = p.id
+            ), '[]'::jsonb),
+            'clips', COALESCE((
+                SELECT jsonb_agg(to_jsonb(c))
+                FROM fullcrea_clips c WHERE c.project_id = p.id
+            ), '[]'::jsonb)
+        ) ELSE NULL END
+    )
+    FROM fullcrea_shares s
+    LEFT JOIN fullcrea_projects p ON p.id = s.project_id
+    LEFT JOIN fullcrea_project_settings ps ON ps.project_id = p.id
+    WHERE s.id = share_id;
+$$;
+
+-- Le lien doit s'ouvrir sans compte
+GRANT EXECUTE ON FUNCTION fullcrea_share_payload(TEXT) TO anon, authenticated;
 
 
 -- =====================================================

@@ -10,7 +10,7 @@ import { useEscapeKey } from '@/lib/hooks/useEscapeKey';
 import { useBeforeUnload } from '@/lib/hooks/useBeforeUnload';
 import { renderProjectToMp4 } from '@/lib/export/render';
 import { getSupabase, getCurrentUser } from '@/lib/supabase/client';
-import { createShare, type Share } from '@/lib/supabase/sharesRepo';
+import { createLiveShare, createShare, type Share } from '@/lib/supabase/sharesRepo';
 
 const RESOLUTIONS = [
   { id: 'hd',   label: 'Full HD — 1920 × 1080', width: 1920, height: 1080 },
@@ -67,6 +67,7 @@ export default function ExportButton() {
   // Export de la timeline active, timelines imbriquées dépliées
   const {
     flatClips: clips, allTracks: tracks, currentProject, projectSettings, projectDurationPx, isPersistenceCloud,
+    activeSequenceId,
   } = useProject();
   const { toast } = useToast();
   const [open, setOpen] = useState(false);
@@ -77,6 +78,9 @@ export default function ExportButton() {
   const [error, setError] = useState<string | null>(null);
   // Partage créé dans cette session : lien et code d'intégration en découlent
   const [share, setShare] = useState<Share | null>(null);
+  // Lien en direct : pas de rendu, le lecteur rejoue le projet et suit ses
+  // modifications. Décoché = MP4 figé, rendu une fois pour toutes.
+  const [liveLink, setLiveLink] = useState(true);
   const [copied, setCopied] = useState<string | null>(null);
   const popoverRef = useRef<HTMLDivElement>(null);
   const copiedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -168,6 +172,21 @@ export default function ExportButton() {
     const user = await getCurrentUser(supabase);
     if (!user) throw new Error('Session expirée : reconnecte-toi pour publier un lien.');
 
+    if (liveLink) {
+      // Aucun rendu : le lecteur public rejoue la timeline telle qu'elle est
+      const created = await createLiveShare(supabase, user.id, {
+        projectId: currentProject.id,
+        sequenceId: activeSequenceId,
+        title: currentProject.name,
+        width: projectSettings.width,
+        height: projectSettings.height,
+        durationSec: projectDurationPx / PIXELS_PER_SECOND,
+      });
+      setShare(created);
+      toast({ type: 'success', message: 'Lien en direct créé' });
+      return;
+    }
+
     const { blob, width, height } = await renderMp4();
     setProgress({ stage: 'Envoi de la vidéo…', percent: 95 });
     const created = await createShare(supabase, user.id, {
@@ -250,6 +269,26 @@ export default function ExportButton() {
             ))}
           </div>
 
+          {mode !== 'download' && isPersistenceCloud && (
+            <label className="flex items-start gap-2 text-[11px] text-gray-300 bg-gray-900 border border-gray-800 rounded p-2">
+              <input
+                type="checkbox"
+                checked={liveLink}
+                onChange={(e) => { setLiveLink(e.target.checked); setShare(null); }}
+                disabled={rendering}
+                className="mt-0.5 accent-orange-600"
+              />
+              <span className="min-w-0">
+                <span className="font-semibold text-gray-200">En direct</span>
+                <span className="block text-[10px] text-gray-500 leading-snug">
+                  Le lien rejoue le projet : tes modifications apparaissent chez les spectateurs en
+                  quelques secondes, sans nouveau rendu. Décoche pour figer un MP4.
+                </span>
+              </span>
+            </label>
+          )}
+
+          {(mode === 'download' || !liveLink) && (
           <div>
             <label
               htmlFor="export-resolution"
@@ -269,6 +308,7 @@ export default function ExportButton() {
               ))}
             </select>
           </div>
+          )}
 
           {progress && (
             <div className="space-y-1">
@@ -357,7 +397,9 @@ export default function ExportButton() {
                     </a>
                   </div>
                   <p className="text-[10px] text-gray-500 leading-snug">
-                    N&apos;importe qui avec ce lien peut voir la vidéo dans un lecteur, sans compte.
+                    {share.live
+                      ? 'N\'importe qui avec ce lien voit le montage dans un lecteur, sans compte — et il se met à jour tout seul quand tu modifies le projet.'
+                      : 'N\'importe qui avec ce lien peut voir la vidéo dans un lecteur, sans compte. Ce lien est figé : il ne suivra pas tes modifications.'}
                   </p>
                 </>
               ) : (
@@ -381,18 +423,21 @@ export default function ExportButton() {
                     >
                       {copied === 'embed' ? <><Check size={12} className="text-emerald-400" /> Copié</> : <><Copy size={12} /> Copier le code</>}
                     </button>
-                    <button
-                      type="button"
-                      onClick={() => handleCopy('mp4', share.src)}
-                      title="Copier l'URL directe du MP4"
-                      className="flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded bg-gray-800 hover:bg-gray-700 text-[11px] font-semibold text-gray-200 transition"
-                    >
-                      {copied === 'mp4' ? <><Check size={12} className="text-emerald-400" /> Copié</> : <><Copy size={12} /> URL du MP4</>}
-                    </button>
+                    {share.src && (
+                      <button
+                        type="button"
+                        onClick={() => handleCopy('mp4', share.src!)}
+                        title="Copier l'URL directe du MP4"
+                        className="flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded bg-gray-800 hover:bg-gray-700 text-[11px] font-semibold text-gray-200 transition"
+                      >
+                        {copied === 'mp4' ? <><Check size={12} className="text-emerald-400" /> Copié</> : <><Copy size={12} /> URL du MP4</>}
+                      </button>
+                    )}
                   </div>
                   <p className="text-[10px] text-gray-500 leading-snug">
-                    Le lecteur s&apos;affiche dans une iframe ; l&apos;URL du MP4 sert pour une balise
-                    &lt;video&gt; ou un autre lecteur.
+                    {share.live
+                      ? 'Le lecteur intégré suit le projet : la page qui héberge ce code affiche toujours la dernière version.'
+                      : 'Le lecteur s\'affiche dans une iframe ; l\'URL du MP4 sert pour une balise <video> ou un autre lecteur.'}
                   </p>
                 </>
               )}
@@ -403,7 +448,7 @@ export default function ExportButton() {
                 disabled={rendering}
                 className="w-full flex items-center justify-center gap-1.5 py-1.5 rounded text-[11px] text-gray-400 hover:text-white hover:bg-gray-800 transition disabled:opacity-50"
               >
-                <RefreshCw size={11} /> Publier une nouvelle version
+                <RefreshCw size={11} /> {share.live ? 'Créer un autre lien' : 'Publier une nouvelle version'}
               </button>
             </div>
           ) : (
@@ -419,9 +464,11 @@ export default function ExportButton() {
             </button>
           )}
 
-          <p className="text-[10px] text-gray-500 leading-snug">
-            Rendu local via ffmpeg.wasm (~1× temps réel en HD, plus lent en 4K). Ne ferme pas l&apos;onglet.
-          </p>
+          {(mode === 'download' || !liveLink) && (
+            <p className="text-[10px] text-gray-500 leading-snug">
+              Rendu local via ffmpeg.wasm (~1× temps réel en HD, plus lent en 4K). Ne ferme pas l&apos;onglet.
+            </p>
+          )}
         </div>
       )}
     </div>
