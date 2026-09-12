@@ -2,7 +2,10 @@
 
 import { shouldIgnoreShortcut } from '@/lib/keyboard';
 import { useEffect } from 'react';
-import { Copy, MousePointer2, Redo2, Scissors, Trash2, Type, Undo2, type LucideIcon } from 'lucide-react';
+import {
+  Copy, FoldHorizontal, ListChecks, Magnet, MousePointer2, Redo2, Scissors, SquareSplitHorizontal, Trash2, Type, Undo2,
+  type LucideIcon,
+} from 'lucide-react';
 import { useProject, type ToolMode } from '@/components/ProjectContext';
 import ZoomControls from './ZoomControls';
 
@@ -42,23 +45,34 @@ const TOOLS: ToolDefinition[] = [
   },
 ];
 
-const SHORTCUT_TO_TOOL: Partial<Record<string, ToolMode>> = { v: 'select', c: 'cut', t: 'text' };
+// B = alias du cutter (Ctrl+B coupe à la tête, géré par la Timeline)
+const SHORTCUT_TO_TOOL: Partial<Record<string, ToolMode>> = { v: 'select', c: 'cut', b: 'cut', t: 'text' };
 
 const actionButtonClass =
   'p-1.5 rounded transition-all duration-200 text-gray-400 hover:bg-gray-800 hover:text-gray-200 ' +
   'disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-gray-400';
+// Bascules (multi-sélection, aimant) : mises en évidence quand actives
+const toggleButtonClass = (active: boolean) =>
+  `p-1.5 rounded transition-all duration-200 ${active ? 'bg-cyan-700 text-white shadow-lg shadow-cyan-900/20' : 'text-gray-400 hover:bg-gray-800 hover:text-gray-200'}`;
 
 function Separator({ className = '' }: { className?: string }) {
   return <div className={`w-px h-4 bg-gray-800 mx-2 ${className}`} aria-hidden="true" />;
 }
 
 interface TimelineToolbarProps {
-  // Fourni par la Timeline (removeClips) : suppression + toast « Annuler »
-  // (undoIfTop), un seul chemin pour le clavier, le X et la toolbar.
+  // Fournis par la Timeline : suppression / ripple + toast « Annuler »
+  // (undoIfTop), coupe à la tête — un seul chemin pour le clavier, le X et la
+  // toolbar. Les raccourcis (Suppr, Maj+Suppr, Ctrl+B, N) vivent dans Timeline.
   onDeleteClips: (ids: string[]) => void;
+  onRippleDeleteClips: (ids: string[]) => void;
+  onSplit: () => void;
+  multiSelectMode: boolean;
+  onToggleMulti: () => void;
 }
 
-export default function TimelineToolbar({ onDeleteClips }: TimelineToolbarProps) {
+export default function TimelineToolbar({
+  onDeleteClips, onRippleDeleteClips, onSplit, multiSelectMode, onToggleMulti,
+}: TimelineToolbarProps) {
   const {
     activeTool,
     setActiveTool,
@@ -68,13 +82,16 @@ export default function TimelineToolbar({ onDeleteClips }: TimelineToolbarProps)
     canRedo,
     selectedClipIds,
     duplicateClips,
+    snapEnabled,
+    setSnapEnabled,
   } = useProject();
 
   // Raccourcis outils : ignorés avec un modificateur (Ctrl+C = copier, pas le
-  // cutter), pendant la saisie de texte et sur les répétitions de touche.
+  // cutter ; Maj+lettre reste libre), pendant la saisie de texte et sur les
+  // répétitions de touche.
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.ctrlKey || e.metaKey || e.altKey || e.repeat) return;
+      if (e.ctrlKey || e.metaKey || e.altKey || e.shiftKey || e.repeat) return;
       if (shouldIgnoreShortcut(e)) return;
       const tool = SHORTCUT_TO_TOOL[e.key.toLowerCase()];
       if (tool) setActiveTool(tool);
@@ -136,6 +153,40 @@ export default function TimelineToolbar({ onDeleteClips }: TimelineToolbarProps)
         Outil actuel : <span className={currentTool.textClass}>{currentTool.label}</span>
       </span>
 
+      <Separator />
+
+      {/* Bascules : multi-sélection (tactile) et aimant */}
+      <button
+        onClick={onToggleMulti}
+        className={toggleButtonClass(multiSelectMode)}
+        title="Sélection multiple (tap = ajouter/retirer)"
+        aria-label="Sélection multiple"
+        aria-pressed={multiSelectMode}
+      >
+        <ListChecks size={18} />
+      </button>
+      <button
+        onClick={() => setSnapEnabled(!snapEnabled)}
+        className={toggleButtonClass(snapEnabled)}
+        title="Aimant (N)"
+        aria-label="Aimant (N)"
+        aria-pressed={snapEnabled}
+      >
+        <Magnet size={18} />
+      </button>
+
+      <Separator />
+
+      {/* Coupe à la tête de lecture */}
+      <button
+        onClick={onSplit}
+        className={actionButtonClass}
+        title="Couper à la tête de lecture (Ctrl+B)"
+        aria-label="Couper à la tête de lecture (Ctrl+B)"
+      >
+        <SquareSplitHorizontal size={18} />
+      </button>
+
       {/* Actions sur la sélection (raccourcis gérés par la Timeline) */}
       {selectedClipIds.length > 0 && (
         <>
@@ -155,6 +206,14 @@ export default function TimelineToolbar({ onDeleteClips }: TimelineToolbarProps)
             aria-label="Supprimer la sélection (Suppr)"
           >
             <Trash2 size={16} />
+          </button>
+          <button
+            onClick={() => onRippleDeleteClips(selectedClipIds)}
+            className={`${actionButtonClass} hover:text-red-400`}
+            title="Supprimer et refermer (Maj+Suppr)"
+            aria-label="Supprimer la sélection et refermer le trou (Maj+Suppr)"
+          >
+            <FoldHorizontal size={16} />
           </button>
         </>
       )}

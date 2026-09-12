@@ -125,6 +125,37 @@ export function neighborBounds(clips: Clip[], clip: Clip): { prevEnd: number; ne
   return { prevEnd, nextStart };
 }
 
+/** Bornes d'un trim, calculées depuis l'état initial du clip (jamais cumulées). */
+export interface TrimBounds {
+  minStart: number;   // bord gauche : point d'entrée 0 (vidéo/audio) et fin du voisin de gauche
+  maxStart: number;   // bord gauche : garde MIN_CLIP_WIDTH_PX
+  minEnd: number;     // bord droit : garde MIN_CLIP_WIDTH_PX
+  maxEnd: number;     // bord droit : fin de la source (si connue) et début du voisin de droite
+}
+
+/**
+ * Bornes de trim d'un clip : un clip vidéo/audio ne peut pas s'étendre à
+ * gauche au-delà de `offset = 0` ni à droite au-delà de `sourceDuration`
+ * (quand elle est connue) ; tous les clips sont bloqués par leurs voisins de
+ * piste. Le clamp s'applique APRÈS l'aimantation.
+ */
+export function trimBounds(clips: Clip[], clip: Clip): TrimBounds {
+  const { prevEnd, nextStart } = neighborBounds(clips, clip);
+  const offset = clip.offset ?? 0;
+  const end = clipEnd(clip);
+  const sourceEnd = hasOffset(clip) && clip.sourceDuration != null
+    ? clip.start - offset + clip.sourceDuration
+    : Infinity;
+  return {
+    minStart: hasOffset(clip) ? Math.max(clip.start - offset, prevEnd) : prevEnd,
+    maxStart: end - MIN_CLIP_WIDTH_PX,
+    minEnd: clip.start + MIN_CLIP_WIDTH_PX,
+    maxEnd: Math.min(sourceEnd, nextStart),
+  };
+}
+
+export const clamp = (v: number, lo: number, hi: number): number => Math.min(Math.max(v, lo), hi);
+
 /**
  * Supprime `ids` et referme les trous : par piste, du clip supprimé le plus
  * tardif au plus tôt, les clips restants qui commencent à (ou après) la fin

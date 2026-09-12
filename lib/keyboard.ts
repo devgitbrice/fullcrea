@@ -11,5 +11,9 @@ export function shouldIgnoreShortcut(e: KeyboardEvent): boolean {
   if (isEditableTarget(e.target)) return true;
   if (document.querySelector('[aria-modal="true"]')) return true;
   const el = e.target instanceof Element ? e.target : null;
-  return !!el?.closest('[role="dialog"],[role="menu"],[role="listbox"]');
+  const scope = el?.closest('[role="dialog"],[role="menu"],[role="listbox"]');
+  // La zone des pistes de la timeline est un listbox dont les raccourcis
+  // globaux (Suppr, Espace, Ctrl+B…) doivent rester actifs quand un clip a le
+  // focus : elle se déclare avec data-shortcuts-passthrough.
+  return !!scope && !scope.hasAttribute('data-shortcuts-passthrough');
 }

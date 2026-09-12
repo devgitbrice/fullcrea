@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import type { Clip, Track } from './types';
 import {
   splitClip, computeRipple, overlapsOnTrack, findFreeStart, findFreeGroupDelta,
-  neighborBounds, findActiveVisual, findActiveAudio, mediaTimeSec, clipEdges, isClipLocked, newId,
+  neighborBounds, findActiveVisual, findActiveAudio, mediaTimeSec, clipEdges, isClipLocked, newId, trimBounds, clamp,
 } from './clipOps.ts';
 
 const clip = (id: string, track: number, start: number, width: number, extra: Partial<Clip> = {}): Clip => ({
@@ -135,4 +135,39 @@ test('clipEdges et isClipLocked', () => {
   const locked = TRACKS.map(t => t.id === 1 ? { ...t, locked: true } : t);
   assert.equal(isClipLocked(clips[0], locked), true);
   assert.equal(isClipLocked(clips[1], locked), false);
+});
+
+test('clipEdges : 0 toujours présent, bords dédoublonnés et triés, pistes filtrées', () => {
+  const clips = [clip('a', 1, 0, 50), clip('b', 1, 50, 50), clip('c', 3, 20, 10), clip('d', 2, 200, 10, { type: 'audio' })];
+  assert.deepEqual(clipEdges(clips, new Set([1, 3])), [0, 20, 30, 50, 100]);
+  assert.deepEqual(clipEdges(clips, new Set([2])), [0, 200, 210]);
+  assert.deepEqual(clipEdges([], new Set([1])), [0]);
+});
+
+test('trimBounds : offset et sourceDuration bornent un clip vidéo', () => {
+  const clips = [clip('p', 1, 0, 40), clip('me', 1, 100, 60, { offset: 30, sourceDuration: 120 }), clip('n', 1, 300, 20)];
+  const b = trimBounds(clips, clips[1]);
+  // Gauche : offset 30 → au plus 30 px plus tôt (70), voisin de gauche fini à 40
+  assert.equal(b.minStart, 70);
+  assert.equal(b.maxStart, 160 - 5);
+  assert.equal(b.minEnd, 100 + 5);
+  // Droite : source finit à 100 − 30 + 120 = 190 < voisin (300)
+  assert.equal(b.maxEnd, 190);
+});
+
+test('trimBounds : voisins seulement pour une image ; Infinity sans voisin ni source', () => {
+  const clips = [clip('p', 1, 0, 40), clip('img', 1, 100, 60, { type: 'image' })];
+  const b = trimBounds(clips, clips[1]);
+  assert.deepEqual(b, { minStart: 40, maxStart: 155, minEnd: 105, maxEnd: Infinity });
+  // Vidéo sans offset ni source, voisin de droite
+  const v = [clip('me', 1, 100, 60), clip('n', 1, 200, 10)];
+  assert.deepEqual(trimBounds(v, v[0]), { minStart: 100, maxStart: 155, minEnd: 105, maxEnd: 200 });
+});
+
+test('trimBounds + clamp : un point d\'aimant au-delà des bornes est ramené', () => {
+  const clips = [clip('me', 1, 100, 60, { offset: 10, sourceDuration: 100 }), clip('n', 1, 170, 10)];
+  const b = trimBounds(clips, clips[0]);
+  assert.equal(clamp(50, b.minStart, b.maxStart), 90);      // aimant à 50 → offset 0 (start 90)
+  assert.equal(clamp(250, b.minEnd, b.maxEnd), 170);        // aimant à 250 → voisin de droite
+  assert.equal(clamp(140, b.minStart, b.maxStart), 140);
 });
