@@ -6,7 +6,8 @@
 -- CHECKLIST DE DÉPLOIEMENT
 --   [ ] Ré-exécuter ce fichier ENTIER après chaque mise à jour de l'app :
 --       la section 5 bis (migrations) ajoute les colonnes récentes
---       (offset_px, source_duration_px, volume, muted, hidden, locked, markers).
+--       (offset_px, source_duration_px, volume, muted, hidden, locked, markers,
+--       kind, tts).
 --       Sans elles, l'insert échoue « column … does not exist » et l'indicateur
 --       de sauvegarde passe en erreur.
 --   [ ] Vérifier que le bucket 'fullcrea-assets' est Public (section 7).
@@ -149,6 +150,11 @@ ALTER TABLE fullcrea_tracks
   ADD COLUMN IF NOT EXISTS locked BOOLEAN NOT NULL DEFAULT false;
 ALTER TABLE fullcrea_projects
   ADD COLUMN IF NOT EXISTS markers JSONB NOT NULL DEFAULT '[]'::jsonb;
+-- Pistes spéciales (Voix Off / Musique / Micro) et voix off générée (texte + voix)
+ALTER TABLE fullcrea_tracks
+  ADD COLUMN IF NOT EXISTS kind TEXT CHECK (kind IS NULL OR kind IN ('voiceover', 'music', 'mic'));
+ALTER TABLE fullcrea_clips
+  ADD COLUMN IF NOT EXISTS tts JSONB;
 
 
 -- =====================================================

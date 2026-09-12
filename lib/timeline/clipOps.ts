@@ -221,6 +221,16 @@ export function findActiveAudio(clips: Clip[], tracks: Track[], timePx: number):
   return pickTop(candidates, order);
 }
 
+/** Clip audio actif d'UNE piste (un <audio> par piste dans le lecteur) : start le plus grand gagne. */
+export function findActiveAudioOnTrack(clips: Clip[], trackId: number, timePx: number): Clip | null {
+  let best: Clip | null = null;
+  for (const c of clips) {
+    if (c.type !== 'audio' || c.track !== trackId || c.muted || !coversTime(c, timePx)) continue;
+    if (!best || c.start > best.start) best = c;
+  }
+  return best;
+}
+
 export function isClipLocked(clip: Clip, tracks: Track[]): boolean {
   return !!tracks.find(t => t.id === clip.track)?.locked;
 }

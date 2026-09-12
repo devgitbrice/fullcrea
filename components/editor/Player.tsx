@@ -3,11 +3,11 @@
 import { shouldIgnoreShortcut } from '@/lib/keyboard';
 import {
   useRef, useEffect, useMemo, useCallback, useState,
-  PointerEvent as ReactPointerEvent, KeyboardEvent as ReactKeyboardEvent,
+  PointerEvent as ReactPointerEvent, KeyboardEvent as ReactKeyboardEvent, type CSSProperties,
 } from 'react';
 import { Play, Pause, SkipBack, SkipForward, StepBack, StepForward, Repeat, Music, AlertCircle } from 'lucide-react';
-import { useProject, Clip, defaultImageTransform, PX_PER_SEC_BASE } from '@/components/ProjectContext';
-import { findActiveVisual, findActiveAudio, mediaTimeSec } from '@/lib/timeline/clipOps';
+import { useProject, Clip, Track, defaultImageTransform, PX_PER_SEC_BASE } from '@/components/ProjectContext';
+import { findActiveVisual, findActiveAudio, findActiveAudioOnTrack, mediaTimeSec } from '@/lib/timeline/clipOps';
 import { formatTimecode } from '@/lib/timeline/format';
 
 // Clips et currentTime sont exprimés en px à zoom 1 (30 px = 1 s), indépendamment du zoom.
@@ -15,6 +15,91 @@ const PX_PER_SEC = PX_PER_SEC_BASE;
 const DEFAULT_FPS = 30;
 // Absorbe le bruit flottant (31 / 30 * 30 = 30.999…) pour ne pas afficher l'image précédente
 const EPSILON = 1e-6;
+// Synchronisation des éléments média sur l'horloge de la timeline
+const SYNC_INTERVAL = 500; // Sync max toutes les 500ms
+const SYNC_THRESHOLD = 0.5; // Seuil de décalage en secondes
+const PAUSED_SEEK_THRESHOLD = 0.04; // ≈ 1 image à 25 fps
+
+type TimeSubscribe = (cb: (time: number) => void) => () => void;
+
+// Un <audio> par piste audio : Voix Off, Musique, Micro et Audio 1 jouent
+// ensemble (sur une même piste, le clip au start le plus grand gagne).
+function TrackAudio({ track, clips, isPlaying, currentTime, subscribeToTime }: {
+  track: Track; clips: Clip[]; isPlaying: boolean; currentTime: number; subscribeToTime: TimeSubscribe;
+}) {
+  const ref = useRef<HTMLAudioElement>(null);
+  const lastClipRef = useRef<Clip | null>(null);
+  const lastSyncRef = useRef(0);
+
+  const activeClip = useMemo(
+    () => findActiveAudioOnTrack(clips, track.id, currentTime),
+    [clips, track.id, currentTime]
+  );
+
+  useEffect(() => {
+    return subscribeToTime((time) => {
+      const el = ref.current;
+      if (!el) return;
+      const clip = findActiveAudioOnTrack(clips, track.id, time);
+      if (clip && clip.src) {
+        if (isPlaying) {
+          const target = mediaTimeSec(clip, time);
+          const now = performance.now();
+          if (Math.abs(el.currentTime - target) > SYNC_THRESHOLD && now - lastSyncRef.current > SYNC_INTERVAL) {
+            el.currentTime = target;
+            lastSyncRef.current = now;
+          }
+          if (el.paused) el.play().catch(() => {});
+        }
+        lastClipRef.current = clip;
+      } else if (lastClipRef.current) {
+        el.pause();
+        lastClipRef.current = null;
+      }
+    });
+  }, [subscribeToTime, clips, track.id, isPlaying]);
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || !activeClip) return;
+    el.volume = Math.min(1, Math.max(0, activeClip.volume ?? 1));
+    el.muted = !!activeClip.muted || !!track.muted;
+  }, [activeClip?.id, activeClip?.volume, activeClip?.muted, track.muted]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (!isPlaying) ref.current?.pause();
+  }, [isPlaying]);
+
+  // En pause : suivre le scrub image par image
+  useEffect(() => {
+    if (isPlaying) return;
+    const el = ref.current;
+    if (!el || !activeClip?.src) return;
+    const target = mediaTimeSec(activeClip, currentTime);
+    if (Math.abs(el.currentTime - target) > PAUSED_SEEK_THRESHOLD) el.currentTime = target;
+  }, [isPlaying, currentTime, activeClip]);
+
+  // src="" planterait l'élément : undefined quand aucun clip n'est actif
+  return <audio ref={ref} src={activeClip?.src || undefined} preload="auto" />;
+}
+
+// Position / échelle / rotation d'un clip visuel (image ou vidéo), réglées
+// dans le panneau de propriétés à droite de l'aperçu.
+function transformStyleOf(clip: Clip): CSSProperties {
+  const t = clip.transform || defaultImageTransform;
+  return {
+    transform: `
+      translate(${t.positionX}px, ${t.positionY}px)
+      rotateX(${t.rotationX}deg)
+      rotateY(${t.rotationY}deg)
+      rotateZ(${t.rotationZ || 0}deg)
+      scaleX(${t.scaleX})
+      scaleY(${t.scaleY})
+    `,
+    transformOrigin: 'center center',
+    transformStyle: 'preserve-3d',
+  };
+}
 
 const transportButtonClass =
   'p-1 rounded text-gray-400 hover:text-white transition active:scale-90 ' +
@@ -27,16 +112,13 @@ export default function Player() {
   } = useProject();
 
   const videoRef = useRef<HTMLVideoElement>(null);
-  const audioRef = useRef<HTMLAudioElement>(null);
 
   // ✅ Cache pour éviter les recherches répétées de clips
   const lastVideoClipRef = useRef<Clip | null>(null);
-  const lastAudioClipRef = useRef<Clip | null>(null);
 
   // Clips actifs pour l'affichage : même règle que l'export (piste du dessus,
-  // pistes masquées/muettes ignorées). Limite conservée : un seul <video> et un
-  // seul <audio> à la fois — deux clips audio superposés, seul le gagnant est
-  // entendu ; l'export, lui, mixe tout.
+  // pistes masquées/muettes ignorées). Un seul <video> à la fois ; l'audio a
+  // un élément par piste (TrackAudio), comme le mixage de l'export.
   const activeVideoClip = useMemo(
     () => findActiveVisual(clips, tracks, currentTime),
     [clips, tracks, currentTime]
@@ -56,12 +138,12 @@ export default function Player() {
 
   const isVideoMode = currentView === 'video';
 
-  // --- MOTEUR DE SYNCHRONISATION VIDÉO/AUDIO OPTIMISÉ ---
+  // Pistes audio lues (chacune a son <audio>) ; une piste muette ne joue rien
+  const audioTracks = useMemo(() => tracks.filter(t => t.type === 'audio' && !t.muted), [tracks]);
+
+  // --- MOTEUR DE SYNCHRONISATION VIDÉO OPTIMISÉ ---
   // ✅ Ref pour suivre le dernier temps de sync (évite les resyncs trop fréquents)
   const lastSyncTimeRef = useRef<number>(0);
-  const SYNC_INTERVAL = 500; // Sync max toutes les 500ms
-  const SYNC_THRESHOLD = 0.5; // Seuil de décalage en secondes
-  const PAUSED_SEEK_THRESHOLD = 0.04; // ≈ 1 image à 25 fps
 
   useEffect(() => {
     // S'abonner aux mises à jour de temps haute fréquence
@@ -91,27 +173,6 @@ export default function Player() {
         videoRef.current.pause();
         lastVideoClipRef.current = null;
       }
-
-      // Synchronisation AUDIO
-      const audioClip = findActiveAudio(clips, tracks, time);
-      if (audioClip && audioClip.src && audioRef.current) {
-        const targetTime = mediaTimeSec(audioClip, time);
-        const diff = Math.abs(audioRef.current.currentTime - targetTime);
-
-        if (isPlaying) {
-          if (diff > SYNC_THRESHOLD && shouldSync) {
-            audioRef.current.currentTime = targetTime;
-            lastSyncTimeRef.current = now;
-          }
-          if (audioRef.current.paused) {
-            audioRef.current.play().catch(() => {});
-          }
-        }
-        lastAudioClipRef.current = audioClip;
-      } else if (lastAudioClipRef.current && audioRef.current) {
-        audioRef.current.pause();
-        lastAudioClipRef.current = null;
-      }
     });
 
     return unsubscribe;
@@ -120,26 +181,16 @@ export default function Player() {
   // Volume et muet des éléments média : hors du subscriber 60 Hz, seulement
   // quand le clip actif ou son réglage change. Piste vidéo muette = vidéo muette.
   const videoTrackMuted = !!tracks.find(t => t.id === activeVideoClip?.track)?.muted;
-  const audioTrackMuted = !!tracks.find(t => t.id === activeAudioClip?.track)?.muted;
   useEffect(() => {
     const el = videoRef.current;
     if (!el || !activeVideoClip) return;
     el.volume = Math.min(1, Math.max(0, activeVideoClip.volume ?? 1));
     el.muted = !!activeVideoClip.muted || videoTrackMuted;
   }, [activeVideoClip?.id, activeVideoClip?.volume, activeVideoClip?.muted, videoTrackMuted]);
-  useEffect(() => {
-    const el = audioRef.current;
-    if (!el || !activeAudioClip) return;
-    el.volume = Math.min(1, Math.max(0, activeAudioClip.volume ?? 1));
-    el.muted = !!activeAudioClip.muted || audioTrackMuted;
-  }, [activeAudioClip?.id, activeAudioClip?.volume, activeAudioClip?.muted, audioTrackMuted]);
 
   // Gérer pause/play
   useEffect(() => {
-    if (!isPlaying) {
-      videoRef.current?.pause();
-      audioRef.current?.pause();
-    }
+    if (!isPlaying) videoRef.current?.pause();
   }, [isPlaying]);
 
   // En pause, les abonnés au temps ne sont pas notifiés : on suit currentTime
@@ -152,8 +203,7 @@ export default function Player() {
       if (Math.abs(el.currentTime - target) > PAUSED_SEEK_THRESHOLD) el.currentTime = target;
     };
     seek(videoRef.current, activeVideoClip?.type === 'video' ? activeVideoClip : null);
-    seek(audioRef.current, activeAudioClip);
-  }, [isPlaying, currentTime, activeVideoClip, activeAudioClip]);
+  }, [isPlaying, currentTime, activeVideoClip]);
 
   // --- TRANSPORT ---
   const fps = Number.isFinite(projectSettings.fps) && projectSettings.fps > 0 ? projectSettings.fps : DEFAULT_FPS;
@@ -333,32 +383,15 @@ export default function Player() {
                         className="w-full h-full object-contain"
                         playsInline
                         preload="auto"
-                        style={{ willChange: 'transform' }}
+                        style={{ ...transformStyleOf(activeVideoClip), willChange: 'transform' }}
                     />
                     ) : (
-                    (() => {
-                      const t = activeVideoClip.transform || defaultImageTransform;
-                      const transformStyle = {
-                        transform: `
-                          translate(${t.positionX}px, ${t.positionY}px)
-                          rotateX(${t.rotationX}deg)
-                          rotateY(${t.rotationY}deg)
-                          rotateZ(${t.rotationZ || 0}deg)
-                          scaleX(${t.scaleX})
-                          scaleY(${t.scaleY})
-                        `,
-                        transformOrigin: 'center center',
-                        transformStyle: 'preserve-3d' as const,
-                      };
-                      return (
                         <img
                           src={activeVideoClip.src}
                           alt={activeVideoClip.name}
                           className="w-full h-full object-contain transition-transform duration-100"
-                          style={transformStyle}
+                          style={transformStyleOf(activeVideoClip)}
                         />
-                      );
-                    })()
                     )
                 ) : (
                     <div className="absolute inset-0 flex flex-col items-center justify-center text-white z-10">
@@ -415,14 +448,17 @@ export default function Player() {
         </div>
       )}
 
-      {/* LECTEUR AUDIO INVISIBLE */}
-      <audio
-          ref={audioRef}
-          // 👇 LA CORRECTION MAGIQUE : Si src est "", on met undefined.
-          // Le || undefined est crucial car React transforme src="" en attribut vide qui plante.
-          src={activeAudioClip?.src || undefined}
-          preload="auto"
-      />
+      {/* LECTEURS AUDIO INVISIBLES : un par piste audio (voix off + musique + micro ensemble) */}
+      {audioTracks.map(track => (
+        <TrackAudio
+          key={track.id}
+          track={track}
+          clips={clips}
+          isPlaying={isPlaying}
+          currentTime={currentTime}
+          subscribeToTime={subscribeToTime}
+        />
+      ))}
 
       {/* Mode Audio Simplifié */}
       {!isVideoMode && (

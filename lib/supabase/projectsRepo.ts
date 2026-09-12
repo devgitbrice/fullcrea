@@ -39,7 +39,7 @@ export async function fetchAllProjects(supabase: SupabaseClient, userId: string)
       .filter((t: { project_id: string }) => t.project_id === p.id)
       .sort((a: { track_index: number }, b: { track_index: number }) => a.track_index - b.track_index)
       .map((t: {
-        track_index: number; type: 'video' | 'audio' | 'text'; name: string;
+        track_index: number; type: 'video' | 'audio' | 'text'; name: string; kind?: Track['kind'] | null;
         muted?: boolean | null; hidden?: boolean | null; locked?: boolean | null;
       }) => ({
         id: t.track_index,
@@ -48,6 +48,7 @@ export async function fetchAllProjects(supabase: SupabaseClient, userId: string)
         muted: t.muted || undefined,
         hidden: t.hidden || undefined,
         locked: t.locked || undefined,
+        kind: t.kind ?? undefined,
       }));
     const assets: Asset[] = (assetsRes.data ?? [])
       .filter((a: { project_id: string }) => a.project_id === p.id)
@@ -65,6 +66,7 @@ export async function fetchAllProjects(supabase: SupabaseClient, userId: string)
         track_index: number; start_px: number; width_px: number; src: string;
         offset_px?: number | null; source_duration_px?: number | null;
         volume?: number | null; muted?: boolean | null;
+        tts?: Clip['tts'] | null;
         transform: Clip['transform'] | null;
         text_content: string | null; font_size: number | null;
         font_family: string | null; text_color: string | null;
@@ -78,6 +80,7 @@ export async function fetchAllProjects(supabase: SupabaseClient, userId: string)
         src: c.src,
         offset: c.offset_px || undefined,
         sourceDuration: c.source_duration_px ?? undefined,
+        tts: c.tts ?? undefined,
         volume: c.volume ?? undefined,
         muted: c.muted || undefined,
         transform: c.transform ?? undefined,
@@ -144,6 +147,7 @@ export async function upsertProject(
         muted: !!t.muted,
         hidden: !!t.hidden,
         locked: !!t.locked,
+        kind: t.kind ?? null,
       }))
     );
     if (tErr) throw pgError('Écriture fullcrea_tracks échouée', tErr);
@@ -173,6 +177,7 @@ export async function upsertProject(
         source_duration_px: c.sourceDuration ?? null,
         volume: c.volume ?? null,
         muted: !!c.muted,
+        tts: c.tts ?? null,
         transform: c.transform ?? null,
         text_content: c.text ?? null,
         font_size: c.fontSize ?? null,

@@ -5,15 +5,20 @@ import {
   useRef, DragEvent, useState, useEffect, useLayoutEffect, PointerEvent as ReactPointerEvent,
   MouseEvent as ReactMouseEvent, KeyboardEvent as ReactKeyboardEvent, useCallback, useMemo, type ReactNode,
 } from 'react';
-import { Music, Plus, Video, AudioLines, Type, X, MousePointerClick, Lock } from 'lucide-react';
+import { Music, Plus, Video, AudioLines, Type, X, MousePointerClick, MessageSquareText } from 'lucide-react';
 import { useProject, Clip, PX_PER_SEC_BASE, MIN_CLIP_WIDTH_PX } from '@/components/ProjectContext';
 import {
   newId, neighborBounds, isClipLocked, overlapsOnTrack, findFreeStart, clipEdges, trimBounds, clamp,
 } from '@/lib/timeline/clipOps';
 import { formatSeconds, formatTimecode } from '@/lib/timeline/format';
+import { probeMediaDuration } from '@/lib/media/probe';
 import { useToast } from '@/components/Toast';
 import TimelineToolbar from './TimelineToolbar';
 import AudioWaveform from './AudioWaveform';
+import TrackHeader from './TrackHeader';
+import VoiceOverModal from './VoiceOverModal';
+import MusicPickerModal from './MusicPickerModal';
+import type { MicRecording } from '@/lib/hooks/useMicRecorder';
 import {
   ASSET_ADD_EVENT,
   ASSET_DROP_EVENT,
@@ -66,31 +71,6 @@ interface TrackRect {
   locked: boolean;
   top: number;
   bottom: number;
-}
-
-// --- Probe asynchrone de la durée d'un média ---
-function probeMediaDuration(src: string, kind: 'video' | 'audio'): Promise<number | null> {
-  return new Promise((resolve) => {
-    const el = (kind === 'video' ? document.createElement('video') : document.createElement('audio')) as HTMLMediaElement;
-    el.preload = 'metadata';
-    el.muted = true;
-    let done = false;
-    const finish = (val: number | null) => {
-      if (done) return;
-      done = true;
-      el.src = '';
-      try { el.removeAttribute('src'); el.load(); } catch {}
-      resolve(val);
-    };
-    const timer = setTimeout(() => finish(null), 8000);
-    el.addEventListener('loadedmetadata', () => {
-      clearTimeout(timer);
-      const d = el.duration;
-      finish(isFinite(d) && d > 0 ? d : null);
-    }, { once: true });
-    el.addEventListener('error', () => { clearTimeout(timer); finish(null); }, { once: true });
-    try { el.src = src; } catch { finish(null); }
-  });
 }
 
 export default function Timeline() {
@@ -159,6 +139,9 @@ export default function Timeline() {
     markers,
     snapEnabled,
     setSnapEnabled,
+    insertClipOnTrack,
+    uploadAssetFile,
+    setAssets,
   } = useProject();
   const { toast } = useToast();
 
@@ -172,6 +155,9 @@ export default function Timeline() {
   const [cutHover, setCutHover] = useState<{ clipId: string; x: number } | null>(null);
   // Mode « Sélection multiple » (tactile) : tap = toggle, aucun drag
   const [multiSelectMode, setMultiSelectMode] = useState(false);
+  // Pistes spéciales : modale Voix Off (création ou édition d'un clip TTS) et choix de musique
+  const [voiceOverEditor, setVoiceOverEditor] = useState<{ trackId: number; clip?: Clip } | null>(null);
+  const [musicPickerTrack, setMusicPickerTrack] = useState<number | null>(null);
 
   const fps = Number.isFinite(projectSettings.fps) && projectSettings.fps > 0 ? projectSettings.fps : 30;
   const maxMarkerTime = useMemo(() => markers.reduce((max, m) => Math.max(max, m.time), 0), [markers]);
@@ -1036,6 +1022,27 @@ export default function Timeline() {
     };
   }, [insertAsset, dropPosition, NO_EXCLUDE, currentTimeRef]);
 
+  // --- PISTE MICRO : l'enregistrement arrive directement sur la piste ---
+  const handleMicRecorded = useCallback(async (trackId: number, rec: MicRecording, startPx: number) => {
+    const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+    const file = new File([rec.blob], `micro-${stamp}.${rec.extension}`, { type: rec.mimeType });
+    try {
+      const asset = await uploadAssetFile(file);
+      setAssets(prev => [...prev, asset]);
+      const seconds = await probeMediaDuration(asset.src, 'audio');
+      const width = seconds ? Math.max(1, seconds * PX_PER_SEC_BASE) : INITIAL_CLIP_WIDTH_PX;
+      insertClipOnTrack({
+        id: newId('mic'), name: file.name, type: 'audio', src: asset.src,
+        start: Math.max(0, startPx), width, sourceDuration: seconds ? width : undefined,
+      }, trackId);
+      toast({ type: 'success', message: 'Enregistrement placé sur la piste Micro' });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : 'Erreur inconnue';
+      console.error('[fullcrea] Enregistrement micro non sauvegardé', e);
+      toast({ type: 'error', message: `Enregistrement non sauvegardé : ${msg}` });
+    }
+  }, [uploadAssetFile, setAssets, insertClipOnTrack, toast]);
+
   // --- STYLES & FILTRES ---
   const getClipStyle = useCallback((type: string) => {
     if (type === 'audio') return "bg-green-600/40 border-green-500 text-green-100";
@@ -1050,7 +1057,7 @@ export default function Timeline() {
     return text || clip.name;
   };
 
-  const getClipTitle = (clip: Clip) =>
+  const getClipTitle = (clip: Clip) => (clip.tts ? 'Double-clic pour modifier le texte — ' : '') +
     `${getClipLabel(clip)} — ${formatPx(clip.start)} → ${formatPx(clip.start + clip.width)} (${formatPx(clip.width)})`;
 
   // Quels clips appartiennent à quelle piste — filtre par type-cohérence
@@ -1211,7 +1218,13 @@ export default function Timeline() {
               ? 'bg-yellow-900/30 text-yellow-400'
               : track.type === 'video'
                 ? 'bg-blue-900/30 text-blue-400'
-                : 'bg-green-900/30 text-green-400';
+                : track.kind === 'voiceover'
+                  ? 'bg-emerald-900/30 text-emerald-300'
+                  : track.kind === 'music'
+                    ? 'bg-purple-900/30 text-purple-300'
+                    : track.kind === 'mic'
+                      ? 'bg-red-900/30 text-red-300'
+                      : 'bg-green-900/30 text-green-400';
             const locked = !!track.locked;
             return (
               <div
@@ -1229,14 +1242,16 @@ export default function Timeline() {
                 }}
               >
                 {/* En-tête (gouttière), hors du contenu */}
-                <div
-                  data-track-header=""
-                  className={`sticky left-0 h-full border-r border-gray-700 z-40 flex items-center justify-center gap-1 px-1 text-[10px] font-bold uppercase tracking-tighter ${labelBg}`}
-                  style={{ width: TRACK_HEADER_W }}
-                >
-                  <span className="truncate">{track.name}</span>
-                  {locked && <Lock size={12} className="shrink-0 opacity-80" aria-label="Piste verrouillée" />}
-                </div>
+                <TrackHeader
+                  track={track}
+                  width={TRACK_HEADER_W}
+                  className={labelBg}
+                  onAddVoiceOver={() => setVoiceOverEditor({ trackId: track.id })}
+                  onAddMusic={() => setMusicPickerTrack(track.id)}
+                  getMicStartPx={() => currentTimeRef.current}
+                  onMicRecorded={(rec, startPx) => handleMicRecorded(track.id, rec, startPx)}
+                  onMicError={(message) => toast({ type: 'error', message })}
+                />
                 {/* Lane : porte les clips, left = clip.start × zoom */}
                 <div className="absolute inset-y-0 right-0" style={{ left: TRACK_HEADER_W }}>
                 {clipsForTrack(track).map(clip => {
@@ -1276,6 +1291,12 @@ export default function Timeline() {
                       e.stopPropagation();
                       handleClipClick(e, clip);
                     }}
+                    onDoubleClick={(e) => {
+                      // Voix off générée : double-clic = modifier le texte et régénérer
+                      if (!clip.tts || locked) return;
+                      e.stopPropagation();
+                      setVoiceOverEditor({ trackId: clip.track, clip });
+                    }}
                     onKeyDown={(e) => handleClipKeyDown(e, clip)}
                   >
                     {showHandles && (
@@ -1308,7 +1329,9 @@ export default function Timeline() {
                       />
                     )}
                     <div className="relative z-[1] flex items-center min-w-0 w-full">
-                      {clip.type === 'audio' && <Music size={12} className="mr-2 shrink-0 opacity-70" />}
+                      {clip.type === 'audio' && (clip.tts
+                        ? <MessageSquareText size={12} className="mr-2 shrink-0 opacity-80" aria-label="Voix off générée — double-clic pour modifier" />
+                        : <Music size={12} className="mr-2 shrink-0 opacity-70" />)}
                       {clip.type === 'text' && <Type size={12} className="mr-2 shrink-0 opacity-50" />}
                       <span className="truncate drop-shadow-[0_1px_1px_rgba(0,0,0,0.6)]">{getClipLabel(clip)}</span>
                     </div>
@@ -1366,6 +1389,17 @@ export default function Timeline() {
           </div>
         </div>
       </div>
+
+      {voiceOverEditor && (
+        <VoiceOverModal
+          trackId={voiceOverEditor.trackId}
+          clip={voiceOverEditor.clip}
+          onClose={() => setVoiceOverEditor(null)}
+        />
+      )}
+      {musicPickerTrack !== null && (
+        <MusicPickerModal trackId={musicPickerTrack} onClose={() => setMusicPickerTrack(null)} />
+      )}
     </div>
   );
 }

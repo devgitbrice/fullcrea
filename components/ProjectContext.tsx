@@ -6,7 +6,7 @@ import { SupabaseClient } from '@supabase/supabase-js';
 import { getSupabase, getCurrentUser } from '@/lib/supabase/client';
 import { fetchAllProjects, upsertProject, deleteProjectRow, uploadAsset } from '@/lib/supabase/projectsRepo';
 import { useBeforeUnload } from '@/lib/hooks/useBeforeUnload';
-import type { Clip, Track, Marker, ImageTransform, Asset, ViewMode, ProjectSettings, Project } from '@/lib/timeline/types';
+import type { Clip, Track, Marker, ImageTransform, Asset, ViewMode, ProjectSettings, Project, TrackKind } from '@/lib/timeline/types';
 import { EMPTY_MARKERS, PX_PER_SEC_BASE } from '@/lib/timeline/types';
 import {
   newId, clipEnd, splitClip, computeRipple, findFreeStart, findFreeGroupDelta,
@@ -15,7 +15,7 @@ import {
 // --- TYPES DU MODÈLE ---
 // Définis dans lib/timeline/types.ts (helpers purs testables sans bundler) et
 // ré-exportés ici : les imports existants ne changent pas.
-export type { Clip, Track, Marker, ImageTransform, Asset, ViewMode, ProjectSettings, Project } from '@/lib/timeline/types';
+export type { Clip, Track, Marker, ImageTransform, Asset, ViewMode, ProjectSettings, Project, TrackKind } from '@/lib/timeline/types';
 export { PX_PER_SEC_BASE, MIN_CLIP_WIDTH_PX, EMPTY_MARKERS } from '@/lib/timeline/types';
 
 export const defaultImageTransform: ImageTransform = {
@@ -110,6 +110,10 @@ interface ProjectContextType {
   getTracks: () => Track[];
   // Actions plurielles : chacune = exactement une entrée d'historique
   insertClip: (clip: Omit<Clip, 'track'>, trackType: 'video' | 'audio') => { id: string; track: number };
+  // Insertion sur une piste précise (pistes spéciales) : place libre, sélection
+  insertClipOnTrack: (clip: Omit<Clip, 'track'>, trackId: number) => string;
+  // Mise à jour ponctuelle (historisée) d'un clip : nouveau média, texte TTS…
+  updateClipFields: (id: string, patch: Partial<Clip>) => void;
   deleteClips: (ids: string[]) => HistoryToken | null;
   deleteClip: (id: string) => HistoryToken | null;
   duplicateClips: (ids: string[]) => string[];
@@ -191,11 +195,32 @@ const trackName = (type: 'video' | 'audio', tracks: Track[]) =>
   `${type === 'video' ? 'Video' : 'Audio'} ${tracks.filter(t => t.type === type).length + 1}`;
 const nextTrackId = (tracks: Track[]) => Math.max(...tracks.map(t => t.id), 0) + 1;
 
+// Pistes audio spéciales, toujours présentes (créées à la volée sur les
+// projets existants par ensureSpecialTracks).
+const SPECIAL_TRACKS: { kind: TrackKind; name: string }[] = [
+  { kind: 'voiceover', name: 'Voix Off' },
+  { kind: 'music', name: 'Musique' },
+  { kind: 'mic', name: 'Micro' },
+];
+
 const buildDefaultTracks = (): Track[] => [
   { id: TEXT_TRACK_ID, type: 'text', name: 'Texte' },
   { id: 1, type: 'video', name: 'Video 1' },
-  { id: 2, type: 'audio', name: 'Audio 1' }
+  { id: 2, type: 'audio', name: 'Audio 1' },
+  { id: 3, type: 'audio', name: 'Voix Off', kind: 'voiceover' },
+  { id: 4, type: 'audio', name: 'Musique', kind: 'music' },
+  { id: 5, type: 'audio', name: 'Micro', kind: 'mic' },
 ];
+
+function ensureSpecialTracks(project: Project): Project {
+  const missing = SPECIAL_TRACKS.filter(s => !project.tracks.some(t => t.kind === s.kind));
+  if (missing.length === 0) return project;
+  const tracks = [...project.tracks];
+  for (const s of missing) {
+    tracks.push({ id: nextTrackId(tracks), type: 'audio', name: s.name, kind: s.kind });
+  }
+  return { ...project, tracks };
+}
 
 // Pour les projets historiques (avant l'introduction de la piste texte) :
 // on garantit qu'une piste 'text' existe et on y rapatrie les clips texte.
@@ -218,7 +243,7 @@ function ensureTextTrack(project: Project): Project {
 // Projet lu depuis le cloud ou localStorage : piste texte garantie et
 // `markers` toujours un tableau (les projets antérieurs n'ont pas le champ).
 function normalizeProject(raw: Project): Project {
-  const p = ensureTextTrack(raw);
+  const p = ensureSpecialTracks(ensureTextTrack(raw));
   return { ...p, markers: Array.isArray(p.markers) ? p.markers : EMPTY_MARKERS };
 }
 
@@ -603,6 +628,24 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     setSelection({ ids: [clip.id], primary: clip.id });
     return { id: clip.id, track: trackId };
   }, [getCurrent, updateCurrentProjectWithHistory]);
+
+  const insertClipOnTrack = useCallback((clip: Omit<Clip, 'track'>, trackId: number): string => {
+    updateCurrentProjectWithHistory(p => {
+      if (!p.tracks.some(t => t.id === trackId)) return p;
+      const candidate: Clip = { ...clip, track: trackId, start: Math.max(0, clip.start) };
+      candidate.start = findFreeStart(p.clips, candidate);
+      return { ...p, clips: [...p.clips, candidate] };
+    }, true);
+    setSelection({ ids: [clip.id], primary: clip.id });
+    return clip.id;
+  }, [updateCurrentProjectWithHistory]);
+
+  const updateClipFields = useCallback((id: string, patch: Partial<Clip>) => {
+    updateCurrentProjectWithHistory(p => ({
+      ...p,
+      clips: p.clips.map(c => c.id === id ? { ...c, ...patch, id: c.id, track: c.track } : c),
+    }), true);
+  }, [updateCurrentProjectWithHistory]);
 
   const deleteClips = useCallback((ids: string[]): HistoryToken | null => {
     const set = new Set(ids);
@@ -1194,7 +1237,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
       isPlaying, togglePlay, currentTime, setCurrentTime,
       currentTimeRef, subscribeToTime,
       clips: currentProject.clips, setClips, setClipsWithoutHistory, getClips, getTracks,
-      insertClip, deleteClips, deleteClip, duplicateClips, duplicateClip, rippleDeleteClips, splitClipsAt, updateClips, pasteClips,
+      insertClip, insertClipOnTrack, updateClipFields, deleteClips, deleteClip, duplicateClips, duplicateClip, rippleDeleteClips, splitClipsAt, updateClips, pasteClips,
       projectDurationPx,
       tracks: currentProject.tracks, addTrack, ensureTrack, updateTrack, deleteTrack,
       textTrackId: (currentProject.tracks.find(t => t.type === 'text')?.id ?? TEXT_TRACK_ID),

@@ -30,16 +30,23 @@ export interface Clip {
   volume?: number;          // 0..1, défaut 1 (vidéo/audio)
   muted?: boolean;          // vidéo/audio
   transform?: ImageTransform;
+  // Voix off générée : texte et voix d'origine, pour rééditer et régénérer
+  tts?: { text: string; voice: string };
   text?: string;
   fontSize?: number;
   fontFamily?: string;
   textColor?: string;
 }
 
+// Pistes audio spéciales : Voix Off (texte → parole), Musique, Micro
+// (enregistrement direct). Elles portent un bouton dédié dans leur en-tête.
+export type TrackKind = 'voiceover' | 'music' | 'mic';
+
 export interface Track {
   id: number;
   type: 'video' | 'audio' | 'text';
   name: string;
+  kind?: TrackKind;  // pistes audio seulement
   muted?: boolean;   // pistes vidéo et audio : son coupé (lecteur + export)
   hidden?: boolean;  // pistes vidéo : clips ignorés (image ET son) ; jamais sur la piste texte
   locked?: boolean;  // toutes pistes : clips non sélectionnables/éditables ; dépôt refusé

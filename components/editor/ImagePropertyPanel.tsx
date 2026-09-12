@@ -119,9 +119,10 @@ export default function ImagePropertyPanel() {
   }, []);
 
   const selectedClip = clips.find(c => c.id === selectedClipId);
-  const isImageSelected = selectedClip && selectedClip.type === 'image';
+  // Images et vidéos partagent la même transformation (position, échelle, rotation)
+  const isVisualSelected = selectedClip && (selectedClip.type === 'image' || selectedClip.type === 'video');
 
-  if (!isImageSelected) {
+  if (!isVisualSelected) {
     return null;
   }
 
@@ -193,7 +194,9 @@ export default function ImagePropertyPanel() {
       {/* Header */}
       <div className="p-4 border-b border-gray-800">
         <div className="flex items-center justify-between gap-2">
-          <h3 className="text-sm font-semibold text-white truncate">Propriétés Image</h3>
+          <h3 className="text-sm font-semibold text-white truncate">
+            {selectedClip.type === 'video' ? 'Propriétés Vidéo' : 'Propriétés Image'}
+          </h3>
           <button
             onClick={resetTransform}
             className="text-xs text-gray-400 hover:text-white flex items-center gap-1 transition shrink-0"

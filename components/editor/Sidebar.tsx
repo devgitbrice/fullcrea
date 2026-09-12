@@ -5,6 +5,7 @@ import {
   Upload,
   Video,
   Monitor,
+  Mic,
   Piano,
   Wand2,
   FolderOpen,
@@ -134,9 +135,19 @@ export default function Sidebar() {
             onClick={() => setRecorderMode('camera')}
             title="Enregistrer une vidéo (webcam ou iPhone)"
             aria-label="Enregistrer une vidéo"
-            className="p-2 rounded bg-gray-800 hover:bg-gray-700 text-gray-200 transition"
+            className="relative p-2 rounded bg-gray-800 hover:bg-gray-700 text-gray-200 transition"
           >
             <Video size={16} />
+            <RecDot />
+          </button>
+          <button
+            onClick={() => setRecorderMode('audio')}
+            title="Enregistrer le micro"
+            aria-label="Enregistrer le micro"
+            className="relative p-2 rounded bg-gray-800 hover:bg-gray-700 text-gray-200 transition"
+          >
+            <Mic size={16} />
+            <RecDot />
           </button>
           <button
             onClick={() => setRecorderMode('screen')}
@@ -180,14 +191,24 @@ export default function Sidebar() {
                 <Upload size={16} />
                 {isUploading ? 'Import en cours…' : 'Importer Média'}
               </button>
-              <div className="grid grid-cols-2 gap-1">
+              <div className="grid grid-cols-3 gap-1">
                 <button
                   onClick={() => setRecorderMode('camera')}
-                  title="Webcam ou iPhone connecté"
+                  title="Enregistrer une vidéo (webcam ou iPhone connecté)"
                   className="flex items-center justify-center gap-1.5 bg-gray-800 hover:bg-gray-700 text-gray-200 py-2 rounded text-xs font-medium transition"
                 >
+                  <RecDot inline />
                   <Video size={14} />
                   Vidéo
+                </button>
+                <button
+                  onClick={() => setRecorderMode('audio')}
+                  title="Enregistrer le micro"
+                  className="flex items-center justify-center gap-1.5 bg-gray-800 hover:bg-gray-700 text-gray-200 py-2 rounded text-xs font-medium transition"
+                >
+                  <RecDot inline />
+                  <Mic size={14} />
+                  Micro
                 </button>
                 <button
                   onClick={() => setRecorderMode('screen')}
@@ -312,6 +333,19 @@ export default function Sidebar() {
 function ComingSoonBadge() {
   return (
     <span className="text-[9px] uppercase bg-gray-800 text-gray-400 rounded px-1">Bientôt</span>
+  );
+}
+
+// Rond rouge « enregistrement » : en ligne dans un bouton texte, ou posé en
+// coin sur une icône (rail réduit).
+function RecDot({ inline = false }: { inline?: boolean }) {
+  return (
+    <span
+      aria-hidden="true"
+      className={`block rounded-full bg-red-500 shadow-[0_0_6px_rgba(239,68,68,0.8)] ${
+        inline ? 'w-2 h-2 shrink-0' : 'absolute top-1 right-1 w-2 h-2'
+      }`}
+    />
   );
 }
 
