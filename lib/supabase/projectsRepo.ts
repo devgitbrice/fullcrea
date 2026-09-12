@@ -228,11 +228,35 @@ export async function fetchAllProjects(supabase: SupabaseClient, userId: string)
       ...clipRows.map((c) => c.sequenceId),
     ])].filter((id) => !knownIds.has(id));
     for (const [i, id] of orphanIds.entries()) {
+      const clips = clipRows.filter((c) => c.sequenceId === id).map((c) => c.clip);
+      const tracks = trackRows.filter((t) => t.sequenceId === id).map((t) => t.track);
+      // Les pistes ont pu rester déclarées sur une autre timeline : sans piste,
+      // une timeline n'affiche rien. Les ids de piste étant uniques dans le
+      // projet, on emprunte celles que les clips référencent ; à défaut, on en
+      // synthétise une du bon type.
+      const have = new Set(tracks.map((t) => t.id));
+      for (const trackId of new Set(clips.map((c) => c.track))) {
+        if (have.has(trackId)) continue;
+        const known = trackRows.find((t) => t.track.id === trackId)?.track;
+        const clipType = clips.find((c) => c.track === trackId)?.type;
+        const type: Track['type'] = known?.type ?? (clipType === 'audio' ? 'audio' : clipType === 'text' ? 'text' : 'video');
+        tracks.push(known ? { ...known } : { id: trackId, type, name: type === 'audio' ? 'Audio' : type === 'text' ? 'Texte' : 'Video' });
+        have.add(trackId);
+      }
+      // Une timeline complète a au moins une piste texte, vidéo et audio
+      let nextTrackId = Math.max(0, ...trackRows.map((t) => t.track.id), ...tracks.map((t) => t.id)) + 1;
+      for (const type of ['text', 'video', 'audio'] as const) {
+        if (tracks.some((t) => t.type === type)) continue;
+        tracks.push({ id: nextTrackId++, type, name: type === 'text' ? 'Texte' : type === 'video' ? 'Video 1' : 'Audio 1' });
+      }
+      // Ordre d'affichage : texte, vidéo, audio (comme une timeline neuve)
+      const rank = (t: Track) => (t.type === 'text' ? 0 : t.type === 'video' ? 1 : 2);
+      tracks.sort((a, b) => rank(a) - rank(b) || a.id - b.id);
       const rescued: Sequence = {
         id,
         name: `Timeline récupérée ${i + 1}`,
-        tracks: trackRows.filter((t) => t.sequenceId === id).map((t) => t.track),
-        clips: clipRows.filter((c) => c.sequenceId === id).map((c) => c.clip),
+        tracks,
+        clips,
         markers: EMPTY_MARKERS,
         workArea: null,
       };

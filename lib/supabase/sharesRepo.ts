@@ -273,14 +273,19 @@ export async function fetchSharePayload(supabase: SupabaseClient, id: string): P
     ...(project.clips ?? []).map((c) => c.sequence_id ?? MAIN_SEQUENCE_ID),
   ])].filter((id) => !knownIds.has(id));
   for (const [i, id] of orphanIds.entries()) {
-    sequences.push({
-      id,
-      name: `Timeline récupérée ${i + 1}`,
-      tracks: (project.tracks ?? []).filter((t) => (t.sequence_id ?? MAIN_SEQUENCE_ID) === id).map(toTrack),
-      clips: (project.clips ?? []).filter((c) => (c.sequence_id ?? MAIN_SEQUENCE_ID) === id).map(toClip),
-      markers: EMPTY_MARKERS as Marker[],
-      workArea: null,
-    });
+    const clips = (project.clips ?? []).filter((c) => (c.sequence_id ?? MAIN_SEQUENCE_ID) === id).map(toClip);
+    const tracks = (project.tracks ?? []).filter((t) => (t.sequence_id ?? MAIN_SEQUENCE_ID) === id).map(toTrack);
+    // Pistes empruntées au projet quand elles sont déclarées ailleurs (ids uniques)
+    const have = new Set(tracks.map((t) => t.id));
+    for (const trackId of new Set(clips.map((c) => c.track))) {
+      if (have.has(trackId)) continue;
+      const knownRow = (project.tracks ?? []).find((t) => t.track_index === trackId);
+      const clipType = clips.find((c) => c.track === trackId)?.type;
+      const type: Track['type'] = knownRow ? toTrack(knownRow).type : (clipType === 'audio' ? 'audio' : clipType === 'text' ? 'text' : 'video');
+      tracks.push(knownRow ? toTrack(knownRow) : { id: trackId, type, name: type });
+      have.add(trackId);
+    }
+    sequences.push({ id, name: `Timeline récupérée ${i + 1}`, tracks, clips, markers: EMPTY_MARKERS as Marker[], workArea: null });
   }
 
   const sequenceId = sequences.some((s) => s.id === share.sequenceId)
