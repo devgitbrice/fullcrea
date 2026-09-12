@@ -1,8 +1,9 @@
 "use client";
 
 import { useState } from 'react';
-import { useProject } from '@/components/ProjectContext';
+import { useProject, defaultImageTransform, type ImageTransform } from '@/components/ProjectContext';
 import { Type, Palette, RotateCcw } from 'lucide-react';
+import TransformEditor, { YELLOW } from './TransformControls';
 
 const FONT_FAMILIES = [
   'Arial',
@@ -54,6 +55,26 @@ export default function TextPropertyPanel() {
     }));
   };
 
+  // Placement du texte dans l'image : mêmes réglages que pour une image ou une
+  // vidéo, exprimés en pixels projet (donc identiques à l'export et au partage).
+  const transform = selectedClip.transform ?? defaultImageTransform;
+
+  const updateTransform = (key: keyof ImageTransform, value: number) => {
+    setClips(prev => prev.map(c => {
+      if (c.id !== selectedClipId) return c;
+      return { ...c, transform: { ...(c.transform ?? defaultImageTransform), [key]: value } };
+    }));
+  };
+
+  const resetTransformKeys = (keys: (keyof ImageTransform)[]) => {
+    setClips(prev => prev.map(c => {
+      if (c.id !== selectedClipId) return c;
+      const next = { ...(c.transform ?? defaultImageTransform) };
+      keys.forEach(key => { next[key] = defaultImageTransform[key]; });
+      return { ...c, transform: next };
+    }));
+  };
+
   const commitFontSize = (raw: string) => {
     const parsed = parseInt(raw, 10);
     if (!Number.isFinite(parsed)) return;
@@ -69,7 +90,8 @@ export default function TextPropertyPanel() {
         text: 'Votre texte ici',
         fontSize: DEFAULT_FONT_SIZE,
         fontFamily: 'Arial',
-        textColor: '#ffffff'
+        textColor: '#ffffff',
+        transform: { ...defaultImageTransform },
       };
     }));
   };
@@ -229,6 +251,15 @@ export default function TextPropertyPanel() {
             ))}
           </div>
         </div>
+
+        {/* Placement dans l'image : position, échelle, rotation */}
+        <TransformEditor
+          transform={transform}
+          onChange={updateTransform}
+          onReset={resetTransformKeys}
+          accent={YELLOW}
+          positionRange={960}
+        />
       </div>
 
       {/* Preview Info */}

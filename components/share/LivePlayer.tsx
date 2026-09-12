@@ -8,6 +8,7 @@ import {
   clipEnd, findActiveAudioOnTrack, findActiveVisual, flattenClips, mediaTimeSec,
 } from '@/lib/timeline/clipOps';
 import { defaultImageTransform } from '@/components/ProjectContext';
+import TextLayer from '@/components/TextLayer';
 
 // Resynchronise un média quand il dérive de plus d'un tiers de seconde
 const SYNC_THRESHOLD_SEC = 0.35;
@@ -209,8 +210,7 @@ export default function LivePlayer({ sequences, sequenceId, settings, bare = fal
       {/* Scène */}
       <div
         className="relative w-full bg-black overflow-hidden"
-        // containerType : les textes se mettent à l'échelle de l'aperçu (unités cqw)
-        style={{ aspectRatio: `${settings.width} / ${settings.height}`, containerType: 'inline-size' }}
+        style={{ aspectRatio: `${settings.width} / ${settings.height}` }}
       >
         {activeVisual?.src ? (
           activeVisual.type === 'video' ? (
@@ -238,24 +238,7 @@ export default function LivePlayer({ sequences, sequenceId, settings, bare = fal
         )}
 
         {/* Textes en surimpression */}
-        {activeTexts.map(t => (
-          <div key={t.id} className="absolute inset-0 flex items-center justify-center pointer-events-none">
-            <span
-              style={{
-                fontSize: `${((t.fontSize || 48) / settings.width) * 100}cqw`,
-                fontFamily: t.fontFamily || 'Arial',
-                color: t.textColor || '#ffffff',
-                textShadow: '2px 2px 4px rgba(0,0,0,0.8)',
-                whiteSpace: 'pre-wrap',
-                textAlign: 'center',
-                maxWidth: '90%',
-                lineHeight: 1.2,
-              }}
-            >
-              {t.text || 'Texte'}
-            </span>
-          </div>
-        ))}
+        <TextLayer texts={activeTexts} settings={settings} />
 
         {/* Pistes audio : un élément par piste (voix off, musique, micro…) */}
         {audioTracks.map(track => (

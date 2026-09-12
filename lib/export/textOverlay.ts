@@ -1,14 +1,13 @@
 "use client";
 
 import type { Clip } from '@/lib/timeline/types';
+import {
+  TEXT_LINE_HEIGHT, TEXT_MAX_WIDTH_RATIO, TEXT_SHADOW, textTransform,
+} from '@/lib/timeline/textLayout';
 
-// Mêmes valeurs que l'aperçu (Player) et le lecteur public (LivePlayer) :
-// la taille de police est exprimée dans les pixels du projet et suit donc la
-// résolution de sortie ; l'ombre est calculée sur la même échelle.
-const MAX_WIDTH_RATIO = 0.9;
-const LINE_HEIGHT = 1.2;
-const SHADOW_OFFSET = 2;
-const SHADOW_BLUR = 4;
+// Les constantes de mise en page viennent de lib/timeline/textLayout : l'aperçu,
+// le lecteur public et l'export partagent exactement la même géométrie. Tout est
+// exprimé en pixels projet, mis à l'échelle de la résolution de sortie.
 
 /** Découpe un texte en lignes tenant dans `maxWidth` (retours à la ligne conservés). */
 function wrapLines(ctx: CanvasRenderingContext2D, text: string, maxWidth: number): string[] {
@@ -52,7 +51,7 @@ export async function renderTextOverlayPng(
 
   // Le projet est composé en « pixels projet » : on suit la mise à l'échelle
   const scale = width / (projectWidth || width);
-  const maxWidth = width * MAX_WIDTH_RATIO;
+  const maxWidth = width * TEXT_MAX_WIDTH_RATIO;
 
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
@@ -60,21 +59,30 @@ export async function renderTextOverlayPng(
   for (const clip of texts) {
     const content = (clip.text ?? '').trim();
     if (!content) continue;
+    const t = textTransform(clip);
     const fontSize = (clip.fontSize || 48) * scale;
+
+    ctx.save();
+    // Position, rotation et échelle autour du centre du bloc, comme en CSS
+    ctx.translate(width / 2 + t.positionX * scale, height / 2 + t.positionY * scale);
+    if (t.rotationZ) ctx.rotate((t.rotationZ * Math.PI) / 180);
+    if (t.scaleX !== 1 || t.scaleY !== 1) ctx.scale(t.scaleX, t.scaleY);
+
     ctx.font = `${fontSize}px ${clip.fontFamily || 'Arial'}, sans-serif`;
     ctx.fillStyle = clip.textColor || '#ffffff';
-    ctx.shadowColor = 'rgba(0,0,0,0.8)';
-    ctx.shadowBlur = SHADOW_BLUR * scale;
-    ctx.shadowOffsetX = SHADOW_OFFSET * scale;
-    ctx.shadowOffsetY = SHADOW_OFFSET * scale;
+    ctx.shadowColor = TEXT_SHADOW.color;
+    ctx.shadowBlur = TEXT_SHADOW.blur * scale;
+    ctx.shadowOffsetX = TEXT_SHADOW.offset * scale;
+    ctx.shadowOffsetY = TEXT_SHADOW.offset * scale;
 
     const lines = wrapLines(ctx, content, maxWidth);
-    const lineHeight = fontSize * LINE_HEIGHT;
-    // Bloc centré verticalement, comme l'aperçu
-    const top = height / 2 - ((lines.length - 1) * lineHeight) / 2;
+    const lineHeight = fontSize * TEXT_LINE_HEIGHT;
+    // Bloc centré verticalement sur l'origine, comme l'aperçu
+    const top = -((lines.length - 1) * lineHeight) / 2;
     lines.forEach((line, i) => {
-      ctx.fillText(line, width / 2, top + i * lineHeight, maxWidth);
+      ctx.fillText(line, 0, top + i * lineHeight, maxWidth);
     });
+    ctx.restore();
   }
 
   const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/png'));

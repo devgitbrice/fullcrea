@@ -9,6 +9,7 @@ import { Play, Pause, SkipBack, SkipForward, StepBack, StepForward, Repeat, Musi
 import { useProject, Clip, Track, defaultImageTransform, PX_PER_SEC_BASE } from '@/components/ProjectContext';
 import { findActiveVisual, findActiveAudio, findActiveAudioOnTrack, mediaTimeSec } from '@/lib/timeline/clipOps';
 import { formatTimecode } from '@/lib/timeline/format';
+import TextLayer from '@/components/TextLayer';
 
 // Clips et currentTime sont exprimés en px à zoom 1 (30 px = 1 s), indépendamment du zoom.
 const PX_PER_SEC = PX_PER_SEC_BASE;
@@ -372,8 +373,6 @@ export default function Player() {
                 maxWidth: '100%',
                 width: 'auto',
                 height: '100%',
-                // Référence des unités cqw utilisées par le calque texte
-                containerType: 'inline-size',
               }}
             >
 
@@ -423,30 +422,8 @@ export default function Player() {
                 </div>
             )}
 
-            {/* Calque texte : au-dessus de la scène, qu'il y ait une vidéo ou non.
-                La taille est exprimée en pourcentage de la largeur du cadre (cqw) pour
-                que les proportions soient identiques à l'export et au lien de partage. */}
-            {activeTextClips.map(textClip => (
-              <div
-                key={textClip.id}
-                className="absolute inset-0 flex items-center justify-center pointer-events-none z-30"
-              >
-                <span
-                  style={{
-                    fontSize: `${((textClip.fontSize || 48) / projectSettings.width) * 100}cqw`,
-                    fontFamily: textClip.fontFamily || 'Arial',
-                    color: textClip.textColor || '#ffffff',
-                    textShadow: '2px 2px 4px rgba(0,0,0,0.8)',
-                    whiteSpace: 'pre-wrap',
-                    textAlign: 'center',
-                    maxWidth: '90%',
-                    lineHeight: 1.2,
-                  }}
-                >
-                  {textClip.text || 'Texte'}
-                </span>
-              </div>
-            ))}
+            {/* Calque texte : au-dessus de la scène, qu'il y ait une vidéo ou non */}
+            <TextLayer texts={activeTextClips} settings={projectSettings} />
 
             {/* Overlay REC */}
             {isPlaying && (
