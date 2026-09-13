@@ -1,6 +1,7 @@
 "use client";
 
-import { Video, Mic, Music } from 'lucide-react';
+import Link from 'next/link';
+import { Video, Mic, Music, ArrowLeft } from 'lucide-react';
 import { useProject, ViewMode } from '@/components/ProjectContext';
 
 const VIEWS: { id: ViewMode; label: string; title: string; Icon: typeof Video }[] = [
@@ -16,8 +17,17 @@ export default function ViewSelector() {
     <div
       role="group"
       aria-label="Mode d'édition"
-      className="h-10 bg-black border-b border-gray-800 flex items-center justify-center gap-2 shrink-0"
+      className="relative h-10 bg-black border-b border-gray-800 flex items-center justify-center gap-2 shrink-0"
     >
+      <Link
+        href="/"
+        title="Retour à la liste des projets"
+        aria-label="Retour à la liste des projets"
+        className="absolute left-3 top-1/2 -translate-y-1/2 flex items-center gap-1.5 p-1.5 rounded text-gray-400 hover:text-white hover:bg-gray-800 transition"
+      >
+        <ArrowLeft size={16} />
+        <span className="hidden sm:inline text-xs">Projets</span>
+      </Link>
       {VIEWS.map(({ id, label, title, Icon }) => {
         const isActive = currentView === id;
         return (
