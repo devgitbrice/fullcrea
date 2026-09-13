@@ -349,8 +349,8 @@ function RenameInput({ draft, setDraft, commit, cancel }: { draft: string; setDr
   );
 }
 
-function ActionButton({ icon, label, onClick, tone = 'default', disabled = false, busy = false }: {
-  icon: ReactNode; label: string; onClick: () => void; tone?: 'default' | 'primary' | 'danger'; disabled?: boolean; busy?: boolean;
+function ActionButton({ icon, label, onClick, tone = 'default', disabled = false, busy = false, showLabel = true }: {
+  icon: ReactNode; label: string; onClick: () => void; tone?: 'default' | 'primary' | 'danger'; disabled?: boolean; busy?: boolean; showLabel?: boolean;
 }) {
   const toneClass = tone === 'primary'
     ? 'bg-blue-600 hover:bg-blue-700 text-white'
@@ -368,7 +368,7 @@ function ActionButton({ icon, label, onClick, tone = 'default', disabled = false
       className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded text-xs font-medium transition disabled:opacity-40 disabled:cursor-not-allowed ${toneClass}`}
     >
       {busy ? <Loader2 size={14} className="animate-spin" /> : icon}
-      <span className="hidden xl:inline">{label}</span>
+      {showLabel && <span className="hidden xl:inline">{label}</span>}
     </button>
   );
 }
@@ -501,7 +501,7 @@ function ProjectCard(props: ProjectItemProps) {
           {rename.editing ? (
             <RenameInput draft={rename.draft} setDraft={rename.setDraft} commit={rename.commit} cancel={rename.cancel} />
           ) : (
-            <h3 className="text-sm font-semibold text-white truncate flex-1" title={project.name}>{project.name}</h3>
+            <h3 className="text-base font-semibold text-white truncate flex-1" title={project.name}>{project.name}</h3>
           )}
           <div className="flex items-center gap-1 shrink-0">
             {!isOwner && <SharedBadge />}
@@ -529,37 +529,38 @@ function ProjectRow(props: ProjectItemProps) {
 
   return (
     <div
-      className="grid grid-cols-1 md:grid-cols-[1fr_120px_110px_90px_auto] gap-2 md:gap-3 items-center px-4 py-3 hover:bg-gray-900/60 transition cursor-pointer"
+      className="grid grid-cols-1 md:grid-cols-[minmax(0,1fr)_120px_110px_90px_auto] gap-2 md:gap-3 items-center px-4 py-3 hover:bg-gray-900/60 transition cursor-pointer"
       onDoubleClick={onOpen}
       title="Double-cliquez pour ouvrir"
     >
       <div className="flex items-center gap-3 min-w-0">
-        <div className="w-9 h-9 rounded bg-gray-900 border border-gray-800 flex items-center justify-center shrink-0 text-gray-600">
-          <Film size={16} />
+        <div className="w-10 h-10 rounded bg-gray-900 border border-gray-800 flex items-center justify-center shrink-0 text-gray-600">
+          <Film size={18} />
         </div>
         <div className="min-w-0 flex-1">
           {rename.editing ? (
             <RenameInput draft={rename.draft} setDraft={rename.setDraft} commit={rename.commit} cancel={rename.cancel} />
           ) : (
             <div className="flex items-center gap-2 min-w-0">
-              <span className="text-sm font-medium text-white truncate" title={project.name}>{project.name}</span>
+              <span className="text-base font-semibold text-white truncate" title={project.name}>{project.name}</span>
               {!isOwner && <SharedBadge />}
             </div>
           )}
-          <div className="text-[11px] text-gray-500 flex items-center gap-2">
+          <div className="text-[11px] text-gray-500 flex items-center gap-3 whitespace-nowrap">
             <span className="flex items-center gap-1"><Layers size={11} />{clipCount(project)} clips</span>
             <span className="flex items-center gap-1"><ImageIcon size={11} />{project.assets.length} médias</span>
           </div>
         </div>
       </div>
-      <span className="text-xs text-gray-400 hidden md:flex items-center gap-1"><Clock size={11} />{formatRelativeDate(project.updatedAt) || '—'}</span>
+      <span className="text-xs text-gray-400 hidden md:flex items-center gap-1 whitespace-nowrap"><Clock size={11} />{formatRelativeDate(project.updatedAt) || '—'}</span>
       <span className="text-xs text-gray-400 hidden md:inline">{width}×{height}</span>
       <span className="text-xs font-mono text-gray-400 hidden md:inline">{projectDurationLabel(project)}</span>
-      <div className="flex items-center justify-end gap-1 flex-wrap">
-        <ActionButton icon={<Eye size={14} />} label="Prévisualiser" onClick={onPreview} />
+      {/* Actions en icônes (libellés en infobulle) pour laisser la place au nom du projet */}
+      <div className="flex items-center justify-end gap-1">
+        <ActionButton icon={<Eye size={15} />} label="Prévisualiser" onClick={onPreview} showLabel={false} />
         <ActionButton icon={<PencilLine size={14} />} label="Ouvrir" onClick={onOpen} tone="primary" />
-        <ActionButton icon={<Link2 size={14} />} label="Copier lien de visualisation" onClick={onCopyView} busy={sharing} />
-        <ActionButton icon={<Users size={14} />} label="Copier lien de co-édition" onClick={onCopyEdit} disabled={!isOwner} />
+        <ActionButton icon={<Link2 size={15} />} label="Copier lien de visualisation" onClick={onCopyView} busy={sharing} showLabel={false} />
+        <ActionButton icon={<Users size={15} />} label="Copier lien de co-édition" onClick={onCopyEdit} disabled={!isOwner} showLabel={false} />
         <MoreMenu isOwner={isOwner} onRename={rename.start} onDelete={onDelete} />
       </div>
     </div>
