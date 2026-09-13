@@ -40,7 +40,7 @@ const inputClass = 'w-full bg-gray-900 border border-gray-800 rounded px-3 py-2 
 const labelClass = 'block text-xs text-gray-400 mb-1';
 
 export default function SettingsModal({ onClose }: { onClose: () => void }) {
-  const { currentProject, projectSettings, setProjectSettings, renameProject, deleteProject } = useProject();
+  const { currentProject, projectSettings, setProjectSettings, renameProject, deleteProject, accessRole } = useProject();
   const { toast } = useToast();
   const titleId = useId();
   const nameId = useId();
@@ -221,6 +221,7 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
             <Save size={14} /> Enregistrer
           </button>
 
+          {accessRole === 'owner' && (
           <div className="pt-3 border-t border-gray-800 space-y-2">
             <div className="text-[10px] font-semibold uppercase tracking-wider text-red-400">Zone de danger</div>
             <div className="flex items-center gap-2">
@@ -253,6 +254,7 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
                 : 'Supprime définitivement ce projet et son contenu.'}
             </p>
           </div>
+          )}
         </form>
       </div>
     </div>

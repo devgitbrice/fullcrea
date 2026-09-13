@@ -134,6 +134,11 @@ export interface Project {
   assets: Asset[];
   projectSettings: ProjectSettings;
   currentView: ViewMode;
+  // Métadonnées cloud (absentes en mode local)
+  ownerId?: string;
+  // Jeton du lien de co-édition ; seulement renvoyé au propriétaire
+  editToken?: string | null;
+  updatedAt?: string | null;
 }
 
 // Référence partagée par tous les projets sans marqueur (gelée : toute

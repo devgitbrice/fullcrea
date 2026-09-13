@@ -1,82 +1,17 @@
 "use client";
 
-import { useEffect } from 'react';
-import Sidebar from '@/components/editor/Sidebar';
-import Player from '@/components/editor/Player';
-import Timeline from '@/components/editor/Timeline';
-import PreviewModal from '@/components/PreviewModal';
-import ProjectHeader from '@/components/editor/ProjectHeader';
-import ViewSelector from '@/components/editor/ViewSelector';
-import ImagePropertyPanel from '@/components/editor/ImagePropertyPanel';
-import TextPropertyPanel from '@/components/editor/TextPropertyPanel';
-import { ProjectProvider, useProject } from '@/components/ProjectContext';
 import AuthGate from '@/components/AuthGate';
-import QuickLinks from '@/components/QuickLinks';
+import { ProjectProvider } from '@/components/ProjectContext';
 import { ToastProvider } from '@/components/Toast';
+import ProjectsHome from '@/components/projects/ProjectsHome';
 
-function EditorLayout() {
-  const { currentView } = useProject();
-
-  useEffect(() => {
-    const handleGlobalWheel = (e: WheelEvent) => {
-      if (e.ctrlKey || e.metaKey) {
-        const target = e.target as HTMLElement;
-        // On vérifie si l'utilisateur survole la Timeline
-        const isTimelineZone = target.closest('.timeline-container');
-
-        if (!isTimelineZone) {
-          // Cas 1 : On est sur la Sidebar/Player -> On bloque le zoom Chrome
-          if (e.cancelable) e.preventDefault();
-        } 
-        // Cas 2 : On est sur la Timeline -> On ne fait rien, 
-        // on laisse l'événement arriver à Timeline.tsx
-      }
-    };
-
-    // TRÈS IMPORTANT : capture: true pour intercepter AVANT le bubbling
-    window.addEventListener('wheel', handleGlobalWheel, { passive: false, capture: true });
-    
-    return () => {
-      window.removeEventListener('wheel', handleGlobalWheel, { capture: true });
-    };
-  }, []);
-
-  return (
-    <div className="flex h-screen bg-black text-white overflow-hidden relative font-sans flex-col">
-        <ViewSelector />
-        <div className="flex flex-1 overflow-hidden">
-            <Sidebar />
-            <div className="flex-1 flex flex-col min-w-0">
-              <ProjectHeader />
-              <div className={`
-                 relative z-0 bg-gray-900 border-b border-gray-800 transition-all duration-300 ease-in-out
-                 ${currentView === 'video' ? 'h-[60%]' : 'h-16 shrink-0'}
-              `}>
-                <div className="flex h-full">
-                  <div className="flex-1">
-                    <Player />
-                  </div>
-                  <ImagePropertyPanel />
-                  <TextPropertyPanel />
-                </div>
-              </div>
-              <div className="flex-1 bg-gray-950 z-0 min-h-0">
-                <Timeline />
-              </div>
-            </div>
-        </div>
-        <PreviewModal />
-        <QuickLinks />
-    </div>
-  );
-}
-
-export default function EditorPage() {
+// Accueil après connexion : la liste des projets. L'éditeur vit sur /editor/[id].
+export default function HomePage() {
   return (
     <ToastProvider>
       <AuthGate>
         <ProjectProvider>
-           <EditorLayout />
+          <ProjectsHome />
         </ProjectProvider>
       </AuthGate>
     </ToastProvider>

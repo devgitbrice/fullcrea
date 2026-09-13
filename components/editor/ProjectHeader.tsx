@@ -1,15 +1,16 @@
 "use client";
 
 import { useEffect, useRef, useState } from 'react';
+import Link from 'next/link';
 import { useProject } from '@/components/ProjectContext';
-import { Settings, Monitor, Pencil } from 'lucide-react';
+import { Settings, Monitor, Pencil, ArrowLeft, Users } from 'lucide-react';
 import ExportButton from './ExportButton';
 import SaveIndicator from './SaveIndicator';
 import SettingsModal, { FORMAT_PRESETS, isSamePreset } from './SettingsModal';
 import UserMenu from './UserMenu';
 
 export default function ProjectHeader() {
-  const { projectSettings, setProjectSettings, currentProject, renameProject } = useProject();
+  const { projectSettings, setProjectSettings, currentProject, renameProject, accessRole } = useProject();
   const [settingsOpen, setSettingsOpen] = useState(false);
 
   // Renommage du projet : clic sur le titre (ou sur le crayon) → champ inline.
@@ -36,6 +37,14 @@ export default function ProjectHeader() {
     <div className="min-h-14 bg-gray-950 border-b border-gray-800 flex flex-wrap items-center justify-between gap-x-4 gap-y-2 px-6 py-2 select-none">
 
       <div className="flex flex-wrap items-center gap-2 text-gray-400 text-sm min-w-0">
+        <Link
+          href="/"
+          title="Retour à mes projets"
+          aria-label="Retour à mes projets"
+          className="flex items-center p-1 -ml-1 rounded text-gray-400 hover:text-white hover:bg-gray-800 transition"
+        >
+          <ArrowLeft size={16} />
+        </Link>
         <Monitor size={16} className="shrink-0" />
         {renaming ? (
           <input
@@ -65,6 +74,14 @@ export default function ProjectHeader() {
         )}
         <span className="text-gray-600">/</span>
         <span>Édition</span>
+        {accessRole === 'editor' && (
+          <span
+            className="flex items-center gap-1 text-[10px] uppercase tracking-wider text-purple-300 bg-purple-950/40 border border-purple-900 rounded-full px-2 py-0.5"
+            title="Projet partagé avec vous en co-édition"
+          >
+            <Users size={10} /> Co-édition
+          </span>
+        )}
         <SaveIndicator />
       </div>
 

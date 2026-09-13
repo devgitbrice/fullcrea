@@ -4,7 +4,7 @@ import { shouldIgnoreShortcut } from '@/lib/keyboard';
 import { createContext, useContext, useState, useEffect, useLayoutEffect, useRef, ReactNode, Dispatch, SetStateAction, useCallback, useMemo, MutableRefObject } from 'react';
 import { SupabaseClient } from '@supabase/supabase-js';
 import { getSupabase, getCurrentUser } from '@/lib/supabase/client';
-import { fetchAllProjects, upsertProject, deleteProjectRow, uploadAsset } from '@/lib/supabase/projectsRepo';
+import { fetchAllProjects, upsertProject, deleteProjectRow, uploadAsset, joinProjectByToken } from '@/lib/supabase/projectsRepo';
 import { useBeforeUnload } from '@/lib/hooks/useBeforeUnload';
 import type { Clip, Track, Marker, ImageTransform, Asset, ViewMode, ProjectSettings, Project, TrackKind, Sequence } from '@/lib/timeline/types';
 import { EMPTY_MARKERS, PX_PER_SEC_BASE, MIN_CLIP_WIDTH_PX } from '@/lib/timeline/types';
@@ -30,6 +30,20 @@ export const defaultImageTransform: ImageTransform = {
 };
 
 export type ToolMode = 'select' | 'cut' | 'text';
+
+export type AccessRole = 'owner' | 'editor' | 'viewer';
+
+export interface ProjectProviderProps {
+  children: ReactNode;
+  // Projet à ouvrir une fois l'hydratation terminée (route /editor/[id])
+  initialProjectId?: string;
+  // Jeton de co-édition (?t=…) : inscrit l'utilisateur connecté comme co-éditeur
+  editToken?: string;
+  // Aucune écriture (ni sauvegarde, ni upload) : aperçus
+  readOnly?: boolean;
+  // Projet déjà chargé : pas d'hydratation réseau (aperçu dans la liste des projets)
+  preloadedProject?: Project;
+}
 
 type TimeSubscriber = (time: number) => void;
 
@@ -79,6 +93,12 @@ interface ProjectContextType {
   saveStatus: SaveStatus;
   lastSavedAt: Date | null;
   userEmail: string | null;
+  userId: string | null;
+  // Accès au projet courant
+  readOnly: boolean;
+  accessRole: AccessRole;
+  // initialProjectId demandé mais introuvable une fois hydraté
+  projectNotFound: boolean;
 
   // Historique (undo/redo). Undo/redo ne restaurent pas la sélection (dérivée
   // des clips : un clip disparu en sort automatiquement).
@@ -363,10 +383,14 @@ const buildInitialDefaultProject = (): Project => normalizeProject({
   currentView: 'video',
 });
 
-export function ProjectProvider({ children }: { children: ReactNode }) {
+export function ProjectProvider({ children, initialProjectId, editToken, readOnly = false, preloadedProject }: ProjectProviderProps) {
   // --- ETAT MULTI-PROJETS ---
-  const [projects, setProjects] = useState<Project[]>(() => [buildInitialDefaultProject()]);
-  const [currentProjectId, setCurrentProjectId] = useState<string>('project_default');
+  const [projects, setProjects] = useState<Project[]>(() => preloadedProject ? [preloadedProject] : [buildInitialDefaultProject()]);
+  const [currentProjectId, setCurrentProjectId] = useState<string>(preloadedProject?.id ?? 'project_default');
+  const [userId, setUserId] = useState<string | null>(null);
+  // Rôle attribué par un jeton de co-édition, valable pour ce seul projet
+  const [tokenAccess, setTokenAccess] = useState<{ projectId: string; role: AccessRole } | null>(null);
+  const [projectNotFound, setProjectNotFound] = useState(false);
 
   const currentProject = useMemo(
     () => projects.find(p => p.id === currentProjectId) ?? projects[0],
@@ -1235,7 +1259,25 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
       setHistoryVersion(v => v + 1);
     };
 
+    // Projet demandé par l'URL s'il fait partie de la liste, sinon le premier
+    const pickInitial = (list: Project[]) => {
+      if (initialProjectId) {
+        const found = list.find(p => p.id === initialProjectId);
+        if (found) return found.id;
+        setProjectNotFound(true);
+      }
+      return list[0].id;
+    };
+
     (async () => {
+      // Aperçu : le projet est fourni, aucune lecture réseau
+      if (preloadedProject) {
+        persistedRef.current = { projects: projectsRef.current, currentProjectId: currentProjectIdRef.current };
+        setPersistenceMode(supabaseConfigured ? 'cloud' : 'local');
+        setIsHydrated(true);
+        return;
+      }
+
       // Tentative Supabase
       if (supabase) {
         try {
@@ -1244,16 +1286,28 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
           if (user) {
             const userId = user.id;
             setUserEmail(user.email);
+            setUserId(userId);
+
+            // Lien de co-édition : l'inscription rend le projet visible par le
+            // chargement normal ci-dessous (politiques RLS membres).
+            if (editToken) {
+              const joined = await joinProjectByToken(supabase, editToken);
+              if (cancelled) return;
+              if (joined) setTokenAccess({ projectId: joined.projectId, role: joined.role });
+            }
+
             const fetched = (await fetchAllProjects(supabase, userId)).map(normalizeProject);
             if (cancelled) return;
             if (fetched.length > 0) {
+              const chosenId = pickInitial(fetched);
               setProjects(fetched);
-              setCurrentProjectId(fetched[0].id);
+              setCurrentProjectId(chosenId);
               knownProjectIdsRef.current = new Set(fetched.map(p => p.id));
               lastSavedRef.current = new Map(fetched.map(p => [p.id, p]));
-              persistedRef.current = { projects: fetched, currentProjectId: fetched[0].id };
+              persistedRef.current = { projects: fetched, currentProjectId: chosenId };
               resetHistory();
             } else {
+              if (initialProjectId) setProjectNotFound(true);
               const initial = projectsRef.current;
               for (const p of initial) {
                 await upsertProject(supabase, userId, p);
@@ -1291,7 +1345,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
           if (parsed.projects && Array.isArray(parsed.projects) && parsed.projects.length > 0) {
             const migrated = parsed.projects.map(normalizeProject);
             if (!cancelled) {
-              const restoredId = parsed.currentProjectId ?? migrated[0].id;
+              const restoredId = initialProjectId ? pickInitial(migrated) : (parsed.currentProjectId ?? migrated[0].id);
               setProjects(migrated);
               setCurrentProjectId(restoredId);
               knownProjectIdsRef.current = new Set(migrated.map(p => p.id));
@@ -1308,6 +1362,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
         // plus : il est régénéré au prochain chargement et écrit à la première édition.
         if (!persistedRef.current) {
           persistedRef.current = { projects: projectsRef.current, currentProjectId: currentProjectIdRef.current };
+          if (initialProjectId && !projectsRef.current.some(p => p.id === initialProjectId)) setProjectNotFound(true);
         }
         setPersistenceMode(supabaseConfigured ? 'local-fallback' : 'local');
         setIsHydrated(true);
@@ -1315,7 +1370,18 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     })();
 
     return () => { cancelled = true; };
+    // Les props de mode ne changent pas pendant la vie du provider : une route
+    // (/, /editor/[id]) monte son propre provider.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // --- RÔLE D'ACCÈS AU PROJET COURANT ---
+  const accessRole = useMemo<AccessRole>(() => {
+    if (tokenAccess && tokenAccess.projectId === currentProjectId) return tokenAccess.role;
+    if (!currentProject.ownerId || !userId) return 'owner';
+    return currentProject.ownerId === userId ? 'owner' : 'editor';
+  }, [tokenAccess, currentProjectId, currentProject.ownerId, userId]);
+  const effectiveReadOnly = readOnly || accessRole === 'viewer';
 
   // --- SUIVI DE LA SESSION SUPABASE (email affiché dans l'UI) ---
   useEffect(() => {
@@ -1352,7 +1418,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
 
   // --- SAUVEGARDE DEBOUNCED ---
   useEffect(() => {
-    if (!isHydrated) return;
+    if (!isHydrated || effectiveReadOnly) return;
     // Rien à écrire si l'état est exactement celui déjà persisté (juste après
     // l'hydratation, ou simple changement de projet courant en mode cloud, où
     // currentProjectId n'est pas persisté).
@@ -1434,7 +1500,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
       cancelled = true;
       clearTimeout(handle);
     };
-  }, [projects, currentProjectId, isHydrated]);
+  }, [projects, currentProjectId, isHydrated, effectiveReadOnly]);
 
   // Garde-fou : avertit avant de quitter la page tant que les modifications ne
   // sont pas écrites (en mode cloud il n'existe aucune copie locale de secours).
@@ -1442,6 +1508,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
 
   // --- UPLOAD D'UN FICHIER (Supabase Storage si configuré) ---
   const uploadAssetFile = useCallback(async (file: File): Promise<Asset> => {
+    if (effectiveReadOnly) throw new Error('Projet en lecture seule');
     let type: 'video' | 'audio' | 'image' = 'image';
     if (file.type.startsWith('video')) type = 'video';
     else if (file.type.startsWith('audio')) type = 'audio';
@@ -1468,7 +1535,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
       type,
       src: URL.createObjectURL(file),
     };
-  }, [currentProjectId]);
+  }, [currentProjectId, effectiveReadOnly]);
 
   // --- DURÉE DU PROJET (px à zoom 1) ---
   const projectDurationPx = useMemo(
@@ -1588,7 +1655,8 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
       projects, currentProjectId, currentProject,
       createProject, selectProject, renameProject, deleteProject,
       isHydrated, isPersistenceCloud, persistenceMode, persistenceError, uploadAssetFile,
-      saveStatus, lastSavedAt, userEmail,
+      saveStatus, lastSavedAt, userEmail, userId,
+      readOnly: effectiveReadOnly, accessRole, projectNotFound,
       undo, redo, canUndo, canRedo, beginHistoryGesture, endHistoryGesture, cancelHistoryGesture, undoIfTop,
       isPlaying, togglePlay, currentTime, setCurrentTime,
       currentTimeRef, subscribeToTime,

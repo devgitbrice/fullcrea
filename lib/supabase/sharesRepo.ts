@@ -143,6 +143,41 @@ export async function createLiveShare(
   return { id, title, src: null, width, height, durationSec, live: true, sequenceId, createdAt: null };
 }
 
+/**
+ * Partage en direct existant de l'utilisateur pour cette timeline, sinon null.
+ * Sert à réutiliser un même lien de visualisation au lieu d'en créer un à chaque copie.
+ */
+export async function findLiveShare(
+  supabase: SupabaseClient,
+  userId: string,
+  projectId: string,
+  sequenceId: string,
+): Promise<Share | null> {
+  const { data, error } = await supabase
+    .from(SHARES_TABLE)
+    .select('id, title, width, height, duration_sec, sequence_id, created_at')
+    .eq('user_id', userId)
+    .eq('project_id', projectId)
+    .eq('sequence_id', sequenceId)
+    .eq('live', true)
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (error) throw shareError('Lecture des partages échouée', error);
+  if (!data) return null;
+  return {
+    id: data.id,
+    title: data.title,
+    src: null,
+    width: data.width,
+    height: data.height,
+    durationSec: data.duration_sec ?? null,
+    live: true,
+    sequenceId: data.sequence_id ?? null,
+    createdAt: data.created_at ?? null,
+  };
+}
+
 // --- Lecture publique ---
 
 interface TrackRow {

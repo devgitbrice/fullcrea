@@ -107,11 +107,12 @@ async function deleteStale(
 
 // --- Lecture ---
 
+// Tous les projets visibles par l'utilisateur : les siens et ceux où il est
+// co-éditeur (fullcrea_project_members) — le filtrage est assuré par RLS.
 export async function fetchAllProjects(supabase: SupabaseClient, userId: string): Promise<Project[]> {
   const { data: projectRows, error } = await supabase
     .from('fullcrea_projects')
     .select('*')
-    .eq('user_id', userId)
     .order('created_at', { ascending: true });
 
   if (error) throw pgError('Lecture fullcrea_projects échouée', error);
@@ -289,8 +290,25 @@ export async function fetchAllProjects(supabase: SupabaseClient, userId: string)
       clips: active.clips,
       markers: active.markers,
       assets,
+      ownerId: p.user_id ?? undefined,
+      // Un co-éditeur ne doit pas pouvoir redistribuer l'accès au projet
+      editToken: p.user_id === userId ? (p.edit_token ?? null) : null,
+      updatedAt: p.updated_at ?? null,
     } satisfies Project;
   });
+}
+
+export type SharedRole = 'owner' | 'editor' | 'viewer';
+
+// Rejoint un projet via un jeton de co-édition (compte requis) : inscrit
+// l'utilisateur dans fullcrea_project_members. Renvoie null si le jeton est inconnu.
+export async function joinProjectByToken(
+  supabase: SupabaseClient,
+  token: string
+): Promise<{ projectId: string; role: SharedRole } | null> {
+  const { data, error } = await supabase.rpc('fullcrea_join_project', { p_token: token });
+  if (error) throw pgError('Accès au projet partagé refusé', error);
+  return (data as { projectId: string; role: SharedRole } | null) ?? null;
 }
 
 // --- Écriture (upsert d'un projet entier) ---
@@ -304,9 +322,7 @@ export async function upsertProject(
 ): Promise<void> {
   // Quatre étapes, chacune en parallèle : (1) projet + réglages, (2) pistes,
   // (3) clips + assets (FK vers les pistes pour les clips), (4) nettoyage.
-  const writeProject = writeTolerant(supabase, 'fullcrea_projects', [{
-    id: p.id,
-    user_id: userId,
+  const projectFields = {
     name: p.name,
     current_view: p.currentView,
     markers: p.markers,
@@ -315,7 +331,16 @@ export async function upsertProject(
       id: seq.id, name: seq.name, markers: seq.markers, workArea: seq.workArea ?? null, master: !!seq.master,
     })),
     active_sequence_id: p.activeSequenceId,
-  }], 'upsert', 'Écriture fullcrea_projects échouée');
+  };
+  // Un co-éditeur ne peut pas passer par l'upsert (la politique INSERT exige
+  // user_id = auth.uid()) : il met à jour la ligne du propriétaire.
+  const isOwner = !p.ownerId || p.ownerId === userId;
+  const writeProject = isOwner
+    ? writeTolerant(supabase, 'fullcrea_projects', [{ id: p.id, user_id: userId, ...projectFields }], 'upsert', 'Écriture fullcrea_projects échouée')
+    : (async () => {
+        const { error } = await supabase.from('fullcrea_projects').update(projectFields).eq('id', p.id);
+        if (error) throw pgError('Écriture fullcrea_projects échouée', error);
+      })();
 
   const writeSettings = (async () => {
     const { error: sErr } = await supabase.from('fullcrea_project_settings').upsert({
