@@ -7,6 +7,7 @@ import { clipGain, clipSpeed } from '@/lib/timeline/clipOps';
 import { textTransform } from '@/lib/timeline/textLayout';
 import type { Clip, Track } from '@/lib/timeline/types';
 import { buildVideoSegments, exportableAudioClips } from '@/lib/timeline/segments';
+import { transitionDurationPx, xfadeName, zoomExpr } from '@/lib/timeline/effects';
 
 export type RenderProgress = (info: { stage: string; percent: number }) => void;
 
@@ -49,6 +50,11 @@ const fmt = (sec: number) => Math.max(0, sec).toFixed(3);
  *  3. Chaque clip audio (piste audio non muette, clip non muet) est extrait à
  *     son point d'entrée, avec volume puis délai absolu.
  *  4. Mux final : l'audio des vidéos est conservé et mixé avec les clips audio.
+ *
+ * Effets : le zoom (onglet FX) passe par `zoompan` ; une transition d'entrée
+ * recalcule le début du segment avec `xfade`, depuis la dernière image du
+ * segment précédent. Si ffmpeg refuse un de ces filtres, le segment est rendu
+ * sans l'effet plutôt que de faire échouer l'export.
  *
  * Limitations restantes :
  *  - Pas de transformations (rotation/scale/position) — chaque clip est juste mis à l'échelle
@@ -107,6 +113,11 @@ export async function renderProjectToMp4({
     // Recomposition sur un fond noir à la taille de sortie
     return `${parts.join(',')}[tr];color=c=black:s=${width}x${height}:r=${fps}[cv];`
       + `[cv][tr]overlay=x=(W-w)/2${tx >= 0 ? '+' : ''}${tx}:y=(H-h)/2${ty >= 0 ? '+' : ''}${ty}:shortest=1`;
+  };
+  /** Zoom progressif du clip, ramené au repère du segment (chaîne ffmpeg). */
+  const zoomFilter = (clip: Clip, seg: { startSec: number }): string => {
+    const z = zoomExpr(clip, seg.startSec - clip.start / pixelsPerSecond, pixelsPerSecond, fps);
+    return z ? `,zoompan=z='${z}':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:s=${width}x${height}:fps=${fps}` : '';
   };
   const encodeArgs = ['-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-preset', 'ultrafast', '-c:a', 'aac', '-ar', '44100', '-ac', '2'];
 
@@ -188,22 +199,25 @@ export async function renderProjectToMp4({
     } else if (clip.type === 'image') {
       // Boucle l'image pendant la durée voulue, encode H.264, ajoute une piste audio silencieuse.
       const inputName = await inputFor(clip);
-      await ff.exec([
+      const imageArgs = (zoom: string) => [
         '-loop', '1', '-t', d, '-i', inputName,
         '-f', 'lavfi', '-t', d, '-i', 'anullsrc=r=44100:cl=stereo',
         ...textInput,
         ...(() => {
           const transform = transformFilter(clip);
-          const base = transform ?? scaleFilter;
+          const base = (transform ?? scaleFilter) + zoom;
           if (textPng) return ['-filter_complex', `[0:v]${base}[bg];${overlayChain('[bg]')}`, '-map', '[v]', '-map', '1:a:0'];
-          if (transform) return ['-filter_complex', `[0:v]${transform}[v]`, '-map', '[v]', '-map', '1:a:0'];
+          if (transform || zoom) return ['-filter_complex', `[0:v]${base}[v]`, '-map', '[v]', '-map', '1:a:0'];
           return ['-vf', scaleFilter];
         })(),
         ...encodeArgs,
         '-shortest',
         '-y',
         outName,
-      ]);
+      ];
+      const zoom = zoomFilter(clip, seg);
+      const code = await ff.exec(imageArgs(zoom));
+      if (code !== 0 && zoom) await ff.exec(imageArgs(''));
     } else {
       // Clip vidéo : lu à partir de son point d'entrée, deux entrées (source +
       // silence) pour garantir un flux audio même si la source n'en a pas.
@@ -213,10 +227,11 @@ export async function renderProjectToMp4({
       const transform = transformFilter(clip);
       // setpts accélère ou ralentit l'image ; la source lue est plus longue
       const speedFilter = speed !== 1 ? `setpts=PTS/${speed.toFixed(4)}` : null;
-      const base = [speedFilter, transform ?? scaleFilter].filter(Boolean).join(',');
+      const zoom = zoomFilter(clip, seg);
+      const base = [speedFilter, transform ?? scaleFilter].filter(Boolean).join(',') + zoom;
       const videoChain = textPng
         ? `[0:v]${base}[bg];${overlayChain('[bg]')}`
-        : (transform || speedFilter ? `[0:v]${base}[v]` : null);
+        : (transform || speedFilter || zoom ? `[0:v]${base}[v]` : null);
       const head = [
         '-ss', fmt(seg.inSec), '-i', inputName,
         '-f', 'lavfi', '-t', d, '-i', 'anullsrc=r=44100:cl=stereo',
@@ -256,7 +271,39 @@ export async function renderProjectToMp4({
       }
     }
 
-    segmentNames.push(outName);
+    // Transition d'entrée : le début du segment est refait en fondu depuis la
+    // dernière image du segment précédent (même durée, même son)
+    let finalName = outName;
+    if (clip?.transition && i > 0 && Math.abs(seg.startSec - clip.start / pixelsPerSecond) < 1e-3) {
+      const dur = Math.min(transitionDurationPx(clip) / pixelsPerSecond, seg.durationSec - 1 / fps, segments[i - 1].durationSec);
+      if (dur >= 2 / fps) {
+        const still = `still_${i}.png`;
+        const xName = `xseg_${i}.mp4`;
+        let code = await ff.exec(['-sseof', '-0.1', '-i', segmentNames[i - 1], '-frames:v', '1', '-update', '1', '-y', still]);
+        if (code === 0) {
+          const norm = `scale=${width}:${height},setsar=1,fps=${fps},format=yuv420p,settb=AVTB`;
+          code = await ff.exec([
+            '-framerate', String(fps), '-loop', '1', '-t', fmt(dur), '-i', still,
+            '-i', outName,
+            '-filter_complex',
+            `[0:v]${norm}[a];[1:v]${norm}[b];[a][b]xfade=transition=${xfadeName(clip.transition.type)}:duration=${fmt(dur)}:offset=0,fps=${fps}[v]`,
+            '-map', '[v]', '-map', '1:a:0',
+            ...encodeArgs,
+            '-y',
+            xName,
+          ]);
+          if (code === 0) {
+            await ff.deleteFile(outName).catch(() => undefined);
+            finalName = xName;
+          } else {
+            await ff.deleteFile(xName).catch(() => undefined);
+          }
+        }
+        await ff.deleteFile(still).catch(() => undefined);
+      }
+    }
+
+    segmentNames.push(finalName);
     processed++;
     report(`Préparation des clips… (${processed}/${total})`, (processed / total) * 50);
   }

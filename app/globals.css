@@ -12,3 +12,17 @@ body {
   color: rgb(var(--foreground-rgb));
   background: black;
 }
+
+/* --- Aperçus animés des transitions (bibliothèque) --- */
+@keyframes fx-thumb-dissolve { 0%, 20% { opacity: 0; } 70%, 100% { opacity: 1; } }
+@keyframes fx-thumb-fade { 0%, 45% { opacity: 0; } 80%, 100% { opacity: 1; } }
+@keyframes fx-thumb-wipeleft { 0%, 20% { clip-path: inset(0 0 0 100%); } 70%, 100% { clip-path: inset(0 0 0 0); } }
+@keyframes fx-thumb-slideup { 0%, 20% { transform: translateY(100%); } 70%, 100% { transform: translateY(0); } }
+@keyframes fx-thumb-circleopen { 0%, 20% { clip-path: circle(0% at 50% 50%); } 70%, 100% { clip-path: circle(72% at 50% 50%); } }
+.fx-thumb-dissolve { animation: fx-thumb-dissolve 2.2s ease-in-out infinite alternate; }
+.fx-thumb-wipeleft { animation: fx-thumb-wipeleft 2.2s ease-in-out infinite alternate; }
+.fx-thumb-slideup { animation: fx-thumb-slideup 2.2s ease-in-out infinite alternate; }
+.fx-thumb-circleopen { animation: fx-thumb-circleopen 2.2s ease-in-out infinite alternate; }
+.fx-thumb-fade { animation: fx-thumb-fade 2.2s ease-in-out infinite alternate; }
+@keyframes fx-thumb-black { 0%, 15% { opacity: 0; } 45%, 100% { opacity: 1; } }
+.fx-thumb-black { animation: fx-thumb-black 2.2s ease-in-out infinite alternate; }

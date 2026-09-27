@@ -1,3 +1,5 @@
+import type { TransitionType } from '@/lib/timeline/types';
+
 /**
  * Dépôt d'un média de la bibliothèque vers la timeline.
  *
@@ -37,4 +39,18 @@ export function emitAssetAdd(payload: AssetAddPayload) {
 export function isOverTimeline(clientX: number, clientY: number): boolean {
   const el = document.elementFromPoint(clientX, clientY);
   return !!el?.closest(TIMELINE_SELECTOR);
+}
+
+// --- Transitions de la bibliothèque (même principe que les médias) ---
+
+export type TransitionDropPayload = {
+  type: TransitionType;
+  clientX: number;
+  clientY: number;
+};
+
+export const TRANSITION_DROP_EVENT = 'fullcrea:transition-drop';
+
+export function emitTransitionDrop(payload: TransitionDropPayload) {
+  window.dispatchEvent(new CustomEvent<TransitionDropPayload>(TRANSITION_DROP_EVENT, { detail: payload }));
 }

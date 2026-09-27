@@ -11,7 +11,7 @@ import {
 import { defaultImageTransform } from '@/components/ProjectContext';
 import StageFrame from '@/components/StageFrame';
 import TextClips from '@/components/TextClips';
-import { visualTransformCss } from '@/lib/timeline/textLayout';
+import EffectVisual, { type TimeSubscribe } from '@/components/EffectVisual';
 
 // Resynchronise un média quand il dérive de plus d'un tiers de seconde
 const SYNC_THRESHOLD_SEC = 0.35;
@@ -132,6 +132,12 @@ export default function LivePlayer({ sequences, sequenceId, settings, bare = fal
   const timeRef = useRef(0);
   const lastFrameRef = useRef(0);
   const lastUiRef = useRef(0);
+  // Abonnés à l'horloge image par image (zoom et transitions fluides)
+  const frameSubsRef = useRef(new Set<(t: number) => void>());
+  const subscribe = useCallback<TimeSubscribe>((cb) => {
+    frameSubsRef.current.add(cb);
+    return () => { frameSubsRef.current.delete(cb); };
+  }, []);
   const [time, setTime] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [muted, setMuted] = useState(false);
@@ -174,6 +180,7 @@ export default function LivePlayer({ sequences, sequenceId, settings, bare = fal
         return;
       }
       timeRef.current = next;
+      frameSubsRef.current.forEach(cb => cb(next));
       if (now - lastUiRef.current > UI_REFRESH_MS) {
         lastUiRef.current = now;
         setTime(next);
@@ -295,24 +302,15 @@ export default function LivePlayer({ sequences, sequenceId, settings, bare = fal
         {/* Scène composée en pixels projet : même géométrie qu'à l'export */}
         <StageFrame settings={settings}>
           {activeVisual?.src && (
-            activeVisual.type === 'video' ? (
-              <video
-                ref={videoRef}
-                src={activeVisual.src}
-                onLoadedMetadata={handleLoadedMetadata}
-                playsInline
-                preload="auto"
-                className="absolute inset-0 w-full h-full object-contain"
-                style={{ transform: visualTransformCss(activeVisual) }}
-              />
-            ) : (
-              <img
-                src={activeVisual.src}
-                alt={activeVisual.name}
-                className="absolute inset-0 w-full h-full object-contain"
-                style={{ transform: visualTransformCss(activeVisual) }}
-              />
-            )
+            <EffectVisual
+              clip={activeVisual}
+              clips={clips}
+              tracks={tracks}
+              time={time}
+              subscribe={subscribe}
+              videoRef={videoRef}
+              videoProps={{ onLoadedMetadata: handleLoadedMetadata }}
+            />
           )}
           <TextClips texts={activeTexts} />
         </StageFrame>

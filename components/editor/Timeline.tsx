@@ -23,9 +23,16 @@ import type { MicRecording } from '@/lib/hooks/useMicRecorder';
 import {
   ASSET_ADD_EVENT,
   ASSET_DROP_EVENT,
+  TRANSITION_DROP_EVENT,
   type AssetAddPayload,
   type AssetDropPayload,
+  type TransitionDropPayload,
 } from '@/lib/assetDrag';
+import { pickTransitionTarget, transitionDurationPx } from '@/lib/timeline/effects';
+import { DEFAULT_TRANSITION_PX, transitionLabel, type TransitionType } from '@/lib/timeline/types';
+
+// Distance (px écran) autour d'un raccord où une transition déposée « accroche »
+const TRANSITION_DROP_TOLERANCE_PX = 60;
 
 // Gouttière des en-têtes de piste : hors de la zone de contenu (règle, tête de
 // lecture, conversions). Toute position x « contenu » est décalée d'autant.
@@ -1139,11 +1146,15 @@ export default function Timeline() {
     const dataString = e.dataTransfer.getData("application/react-dnd")
       || e.dataTransfer.getData("text/plain");
     if (!dataString) return;
-    let data: { isNew?: boolean; id?: string; name: string; type: string; src: string };
+    let data: { isNew?: boolean; id?: string; name: string; type: string; src: string; kind?: string; transition?: TransitionType };
     try {
       data = JSON.parse(dataString);
     } catch {
       return; // texte quelconque déposé sur la timeline
+    }
+    if (data?.kind === 'transition' && data.transition) {
+      applyTransitionAt(data.transition, e.clientX, e.clientY);
+      return;
     }
     if (!data || typeof data.type !== 'string' || typeof data.src !== 'string') return;
 
@@ -1163,6 +1174,30 @@ export default function Timeline() {
     });
   };
 
+  // Transition déposée : elle s'accroche au raccord entre deux images le plus
+  // proche du point de dépôt (sur la piste visée), à l'entrée du second clip.
+  const applyTransitionAt = useCallback((type: TransitionType, clientX: number, clientY: number) => {
+    const t = timeFromClientX(clientX);
+    const row = document.elementFromPoint(clientX, clientY)?.closest<HTMLElement>('[data-track-id]');
+    const trackId = row?.dataset.trackId != null ? Number(row.dataset.trackId) : null;
+    const tolerance = TRANSITION_DROP_TOLERANCE_PX / zoomLevelRef.current;
+    const current = getClips();
+    const target = pickTransitionTarget(current, trackId, t, tolerance)
+      ?? (trackId !== null ? pickTransitionTarget(current, null, t, tolerance) : null);
+    if (!target) {
+      toast({ type: 'info', message: 'Déposez la transition sur le raccord entre deux images' });
+      return;
+    }
+    if (isClipLocked(target, getTracks())) {
+      toast({ type: 'error', message: 'Piste verrouillée : transition non ajoutée' });
+      return;
+    }
+    const duration = Math.min(DEFAULT_TRANSITION_PX, target.width / 2);
+    setClips(prev => prev.map(c => (c.id === target.id ? { ...c, transition: { type, duration } } : c)));
+    selectClip(target.id);
+    toast({ type: 'success', message: `Transition « ${transitionLabel(type)} » ajoutée` });
+  }, [timeFromClientX, getClips, getTracks, setClips, selectClip, toast]);
+
   // Dépôt par Pointer Events depuis la bibliothèque (seul chemin qui marche sur
   // iPad et Safari, où le drag HTML5 est indisponible ou bloqué).
   useEffect(() => {
@@ -1174,13 +1209,19 @@ export default function Timeline() {
       const { name, type, src } = (e as CustomEvent<AssetAddPayload>).detail;
       insertAsset({ name, type, src }, Math.max(0, currentTimeRef.current));
     };
+    const onTransitionDrop = (e: Event) => {
+      const { type, clientX, clientY } = (e as CustomEvent<TransitionDropPayload>).detail;
+      applyTransitionAt(type, clientX, clientY);
+    };
     window.addEventListener(ASSET_DROP_EVENT, onDrop);
     window.addEventListener(ASSET_ADD_EVENT, onAdd);
+    window.addEventListener(TRANSITION_DROP_EVENT, onTransitionDrop);
     return () => {
       window.removeEventListener(ASSET_DROP_EVENT, onDrop);
       window.removeEventListener(ASSET_ADD_EVENT, onAdd);
+      window.removeEventListener(TRANSITION_DROP_EVENT, onTransitionDrop);
     };
-  }, [insertAsset, dropPosition, NO_EXCLUDE, currentTimeRef]);
+  }, [insertAsset, dropPosition, NO_EXCLUDE, currentTimeRef, applyTransitionAt]);
 
   // --- PISTE MICRO : l'enregistrement arrive directement sur la piste ---
   const handleMicRecorded = useCallback(async (trackId: number, rec: MicRecording, startPx: number) => {
@@ -1502,6 +1543,15 @@ export default function Timeline() {
                         />
                       </>
                     )}
+                    {/* Transition d'entrée : dégradé rose sur sa durée, au début du clip */}
+                    {clip.transition && (clip.type === 'image' || clip.type === 'video') && (
+                      <div
+                        className="absolute left-0 top-0 bottom-0 z-[2] pointer-events-none bg-gradient-to-r from-pink-500/70 to-pink-500/0 border-l-2 border-pink-400"
+                        style={{ width: Math.max(6, transitionDurationPx(clip) * zoomLevel) }}
+                        title={`Transition : ${transitionLabel(clip.transition.type)}`}
+                        aria-label={`Transition : ${transitionLabel(clip.transition.type)}`}
+                      />
+                    )}
                     {activeTool === 'cut' && cutHover?.clipId === clip.id && (
                       <div
                         className="absolute top-0 bottom-0 w-px bg-red-500 z-20 pointer-events-none"
@@ -1532,6 +1582,9 @@ export default function Timeline() {
                         ? <MessageSquareText size={12} className="mr-2 shrink-0 opacity-80" aria-label="Voix off générée — double-clic pour modifier" />
                         : <Music size={12} className="mr-2 shrink-0 opacity-70" />)}
                       {clip.type === 'text' && <Type size={12} className="mr-2 shrink-0 opacity-50" />}
+                      {clip.fx?.zoom?.enabled && (
+                        <span className="mr-1.5 shrink-0 rounded bg-pink-500/80 px-1 text-[9px] font-bold leading-4 text-white" title="Effet de zoom (onglet FX)">FX</span>
+                      )}
                       <span className="truncate drop-shadow-[0_1px_1px_rgba(0,0,0,0.6)]">{getClipLabel(clip)}</span>
                     </div>
 

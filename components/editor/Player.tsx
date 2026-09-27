@@ -13,7 +13,7 @@ import {
 import { formatTimecode } from '@/lib/timeline/format';
 import StageFrame from '@/components/StageFrame';
 import TextClips from '@/components/TextClips';
-import { visualTransformCss } from '@/lib/timeline/textLayout';
+import EffectVisual from '@/components/EffectVisual';
 
 // Clips et currentTime sont exprimés en px à zoom 1 (30 px = 1 s), indépendamment du zoom.
 const PX_PER_SEC = PX_PER_SEC_BASE;
@@ -376,23 +376,14 @@ export default function Player() {
                 même cadre, donc la même géométrie qu'à l'export. */}
             <StageFrame settings={projectSettings}>
               {activeVideoClip?.src && (
-                activeVideoClip.type === 'video' ? (
-                  <video
-                    ref={videoRef}
-                    src={activeVideoClip.src}
-                    playsInline
-                    preload="auto"
-                    className="absolute inset-0 w-full h-full object-contain"
-                    style={{ transform: visualTransformCss(activeVideoClip), willChange: 'transform' }}
-                  />
-                ) : (
-                  <img
-                    src={activeVideoClip.src}
-                    alt={activeVideoClip.name}
-                    className="absolute inset-0 w-full h-full object-contain"
-                    style={{ transform: visualTransformCss(activeVideoClip) }}
-                  />
-                )
+                <EffectVisual
+                  clip={activeVideoClip}
+                  clips={clips}
+                  tracks={tracks}
+                  time={currentTime}
+                  subscribe={subscribeToTime}
+                  videoRef={videoRef}
+                />
               )}
               <TextClips texts={activeTextClips} />
             </StageFrame>

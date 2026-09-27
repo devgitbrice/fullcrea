@@ -39,6 +39,8 @@ export interface Clip {
   // Lien vidéo ↔ audio détaché : les deux clips portent le même identifiant
   linkId?: string;
   transform?: ImageTransform;
+  // Effets visuels (images et vidéos) : onglet FX du panneau de droite
+  fx?: ClipFx;
   // Voix off générée : texte et voix d'origine, pour rééditer et régénérer
   tts?: { text: string; voice: string };
   // Clip de type 'sequence' : id de la timeline insérée
@@ -53,6 +55,27 @@ export interface Clip {
 // (enregistrement direct). Elles portent un bouton dédié dans leur en-tête.
 export type TrackKind = 'voiceover' | 'music' | 'mic';
 
+/**
+ * Zoom progressif sur toute la durée du clip (effet « Ken Burns » centré).
+ * depth : ampleur en % (20 = l'image finit 20 % plus grande, ou part de là
+ * pour un zoom arrière).
+ */
+export interface ZoomFx {
+  enabled: boolean;
+  direction: 'in' | 'out';
+  depth: number;            // 0..100 (%)
+  curve: 'linear' | 'exponential';
+}
+
+export interface ClipFx {
+  zoom?: ZoomFx;
+}
+
+export const DEFAULT_ZOOM_FX: ZoomFx = { enabled: true, direction: 'in', depth: 20, curve: 'linear' };
+
+/** Durée par défaut d'une transition déposée : 1 s (30 px à zoom 1). */
+export const DEFAULT_TRANSITION_PX = 30;
+
 /** Transitions disponibles à l'entrée d'un clip visuel. */
 export type TransitionType = 'fade' | 'dissolve' | 'wipeleft' | 'wiperight' | 'slideup' | 'circleopen';
 
@@ -64,6 +87,19 @@ export const TRANSITIONS: { id: TransitionType; label: string }[] = [
   { id: 'slideup', label: 'Glissement ↑' },
   { id: 'circleopen', label: 'Cercle' },
 ];
+
+/** Les 5 transitions proposées dans la bibliothèque (glisser-déposer). */
+export const TRANSITION_PALETTE: { id: TransitionType; label: string }[] = [
+  { id: 'dissolve', label: 'Fondu enchaîné' },
+  { id: 'fade', label: 'Fondu au noir' },
+  { id: 'wipeleft', label: 'Balayage' },
+  { id: 'slideup', label: 'Glissement' },
+  { id: 'circleopen', label: 'Cercle' },
+];
+
+export function transitionLabel(type: TransitionType): string {
+  return TRANSITIONS.find(t => t.id === type)?.label ?? type;
+}
 
 export interface Track {
   id: number;

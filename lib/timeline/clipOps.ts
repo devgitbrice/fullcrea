@@ -441,14 +441,15 @@ export interface ClipStyle {
   fadeOut?: number;
   transition?: Clip['transition'];
   transform?: Clip['transform'];
+  fx?: Clip['fx'];
   fontSize?: number;
   fontFamily?: string;
   textColor?: string;
 }
 
 export function copyClipStyle(clip: Clip): ClipStyle {
-  const { volume, muted, speed, fadeIn, fadeOut, transition, transform, fontSize, fontFamily, textColor } = clip;
-  return { volume, muted, speed, fadeIn, fadeOut, transition, transform, fontSize, fontFamily, textColor };
+  const { volume, muted, speed, fadeIn, fadeOut, transition, transform, fx, fontSize, fontFamily, textColor } = clip;
+  return { volume, muted, speed, fadeIn, fadeOut, transition, transform, fx, fontSize, fontFamily, textColor };
 }
 
 // Le style est appliqué champ par champ : un clip texte ne reçoit pas de
@@ -468,6 +469,9 @@ export function applyClipStyle(clip: Clip, style: ClipStyle): Clip {
   if (!isAudio) {
     next.transition = style.transition;
     next.transform = style.transform ? { ...style.transform } : undefined;
+  }
+  if (clip.type === 'image' || clip.type === 'video') {
+    next.fx = style.fx?.zoom ? { ...style.fx, zoom: { ...style.fx.zoom } } : undefined;
   }
   if (isText) {
     next.fontSize = style.fontSize;
