@@ -17,6 +17,8 @@ import { visualTransformCss } from '@/lib/timeline/textLayout';
 const SYNC_THRESHOLD_SEC = 0.35;
 // La barre de progression n'a pas besoin de 60 images par seconde
 const UI_REFRESH_MS = 80;
+// Pas des flèches ← → au clavier
+const SEEK_STEP_SEC = 5;
 
 function formatTime(seconds: number): string {
   const total = Math.max(0, Math.floor(seconds));
@@ -25,9 +27,25 @@ function formatTime(seconds: number): string {
   return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
 }
 
+/**
+ * Lance un média. Si le navigateur refuse le son (lecture demandée sans geste
+ * dans ce cadre, ex. barre d'espace transmise par la page Muxeo), on continue
+ * sans le son — image et temps restent synchronisés — et on le signale pour
+ * proposer « Activer le son ».
+ */
+function playOrMute(el: HTMLMediaElement, onBlocked: () => void) {
+  el.play().catch((err: unknown) => {
+    if ((err as { name?: string })?.name !== 'NotAllowedError' || el.muted) return;
+    onBlocked();
+    el.muted = true;
+    el.play().catch(() => {});
+  });
+}
+
 /** Une piste audio = un élément <audio>, comme dans l'éditeur. */
-function TrackAudio({ track, clips, playing, muted, timeRef }: {
-  track: Track; clips: Clip[]; playing: boolean; muted: boolean; timeRef: React.MutableRefObject<number>;
+function TrackAudio({ track, clips, playing, muted, volume, timeRef, onBlocked }: {
+  track: Track; clips: Clip[]; playing: boolean; muted: boolean; volume: number;
+  timeRef: React.MutableRefObject<number>; onBlocked: () => void;
 }) {
   const ref = useRef<HTMLAudioElement>(null);
   const [activeId, setActiveId] = useState<string | null>(null);
@@ -45,13 +63,13 @@ function TrackAudio({ track, clips, playing, muted, timeRef }: {
       setActiveId(prev => (clip?.id ?? null) === prev ? prev : (clip?.id ?? null));
       const el = ref.current;
       if (el && clip?.src) {
-        const gain = muted || track.muted ? 0 : clipGain(clip, timeRef.current);
+        const gain = muted || track.muted ? 0 : clipGain(clip, timeRef.current) * volume;
         if (Math.abs(el.volume - gain) > 0.01) el.volume = Math.min(1, Math.max(0, gain));
         const speed = clipSpeed(clip);
         if (el.playbackRate !== speed) el.playbackRate = speed;
         const target = mediaTimeSec(clip, timeRef.current);
         if (Math.abs(el.currentTime - target) > SYNC_THRESHOLD_SEC) el.currentTime = target;
-        if (playing && el.paused) el.play().catch(() => {});
+        if (playing && el.paused) playOrMute(el, onBlocked);
         if (!playing && !el.paused) el.pause();
       } else if (el && !el.paused) {
         el.pause();
@@ -60,7 +78,7 @@ function TrackAudio({ track, clips, playing, muted, timeRef }: {
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [clips, track.id, playing, muted, track.muted, timeRef]);
+  }, [clips, track.id, playing, muted, volume, track.muted, timeRef, onBlocked]);
 
   // Volume piloté image par image (fondus) ; ici seulement le muet
   useEffect(() => {
@@ -117,7 +135,13 @@ export default function LivePlayer({ sequences, sequenceId, settings, bare = fal
   const [time, setTime] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [muted, setMuted] = useState(false);
+  // Volume général du lecteur (0..1), réglé au survol du haut-parleur
+  const [volume, setVolume] = useState(1);
   const containerRef = useRef<HTMLDivElement>(null);
+  // Son refusé par le navigateur : lecture muette + bouton « Activer le son »
+  const [soundBlocked, setSoundBlocked] = useState(false);
+  const onBlocked = useCallback(() => setSoundBlocked(true), []);
+  const effectiveMuted = muted || soundBlocked;
 
   const activeVisual = useMemo(() => findActiveVisual(clips, tracks, time), [clips, tracks, time]);
   const activeTexts = useMemo(
@@ -159,11 +183,11 @@ export default function LivePlayer({ sequences, sequenceId, settings, bare = fal
       if (el && clip?.type === 'video' && clip.src) {
         const speed = clipSpeed(clip);
         if (el.playbackRate !== speed) el.playbackRate = speed;
-        const gain = muted ? 0 : clipGain(clip, next);
+        const gain = muted ? 0 : clipGain(clip, next) * volume;
         if (Math.abs(el.volume - gain) > 0.01) el.volume = Math.min(1, Math.max(0, gain));
         const target = mediaTimeSec(clip, next);
         if (Math.abs(el.currentTime - target) > SYNC_THRESHOLD_SEC) el.currentTime = target;
-        if (el.paused) el.play().catch(() => {});
+        if (el.paused) playOrMute(el, onBlocked);
       } else if (el && !el.paused) {
         el.pause();
       }
@@ -171,7 +195,7 @@ export default function LivePlayer({ sequences, sequenceId, settings, bare = fal
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [playing, durationPx, clips, tracks, muted]);
+  }, [playing, durationPx, clips, tracks, muted, volume, onBlocked]);
 
   useEffect(() => {
     if (!playing) videoRef.current?.pause();
@@ -180,8 +204,8 @@ export default function LivePlayer({ sequences, sequenceId, settings, bare = fal
   useEffect(() => {
     const el = videoRef.current;
     if (!el) return;
-    el.muted = muted || !!activeVisual?.muted || !!tracks.find(t => t.id === activeVisual?.track)?.muted;
-  }, [activeVisual?.id, activeVisual?.muted, activeVisual?.track, muted, tracks]);
+    el.muted = effectiveMuted || !!activeVisual?.muted || !!tracks.find(t => t.id === activeVisual?.track)?.muted;
+  }, [activeVisual?.id, activeVisual?.muted, activeVisual?.track, effectiveMuted, tracks]);
 
   // Nouveau clip vidéo : on se replace au bon endroit de la source
   const handleLoadedMetadata = () => {
@@ -192,24 +216,53 @@ export default function LivePlayer({ sequences, sequenceId, settings, bare = fal
   };
 
   const togglePlay = () => {
-    if (!playing && timeRef.current >= durationPx) seek(0);
+    if (!playing) {
+      if (timeRef.current >= durationPx) seek(0);
+      // Médias lancés pendant le geste (clic, Espace) : Safari et Chrome
+      // n'autorisent le son que dans ce cas ; la boucle de lecture remet
+      // ensuite chaque élément à la bonne position ou en pause.
+      containerRef.current?.querySelectorAll<HTMLMediaElement>('audio[src], video[src]')
+        .forEach(el => playOrMute(el, onBlocked));
+    }
     setPlaying(p => !p);
+  };
+
+  // Clic sur « Activer le son » (geste dans ce cadre) : le son est autorisé
+  const enableSound = () => {
+    setSoundBlocked(false);
+    containerRef.current?.querySelectorAll<HTMLMediaElement>('audio, video').forEach(el => {
+      el.muted = muted;
+      if (playing && el.src) el.play().catch(() => {});
+    });
   };
 
   // Barre d'espace = lecture / pause, dans le lecteur ou depuis la page qui
   // l'intègre (Muxeo envoie { type: 'cut:toggle-play' } par postMessage)
+  // Flèches ← → : reculer / avancer de 5 s (aussi par postMessage 'cut:seek')
   const togglePlayRef = useRef(togglePlay);
-  useEffect(() => { togglePlayRef.current = togglePlay; });
+  const seekByRef = useRef((deltaSec: number) => seek(timeRef.current + deltaSec * PX_PER_SEC_BASE));
+  useEffect(() => {
+    togglePlayRef.current = togglePlay;
+    seekByRef.current = (deltaSec: number) => seek(timeRef.current + deltaSec * PX_PER_SEC_BASE);
+  });
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.code !== 'Space' || e.repeat || e.ctrlKey || e.metaKey || e.altKey) return;
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
       const target = e.target as HTMLElement | null;
       if (target?.closest('input, textarea, select, [contenteditable="true"]')) return;
-      e.preventDefault();
-      togglePlayRef.current();
+      if (e.code === 'Space') {
+        if (e.repeat) return;
+        e.preventDefault();
+        togglePlayRef.current();
+      } else if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+        e.preventDefault();
+        seekByRef.current(e.key === 'ArrowLeft' ? -SEEK_STEP_SEC : SEEK_STEP_SEC);
+      }
     };
     const onMessage = (e: MessageEvent) => {
-      if (e.data && typeof e.data === 'object' && e.data.type === 'cut:toggle-play') togglePlayRef.current();
+      if (!e.data || typeof e.data !== 'object') return;
+      if (e.data.type === 'cut:toggle-play') togglePlayRef.current();
+      if (e.data.type === 'cut:seek' && typeof e.data.seconds === 'number') seekByRef.current(e.data.seconds);
     };
     window.addEventListener('keydown', onKey);
     window.addEventListener('message', onMessage);
@@ -264,6 +317,16 @@ export default function LivePlayer({ sequences, sequenceId, settings, bare = fal
           <TextClips texts={activeTexts} />
         </StageFrame>
 
+        {soundBlocked && !muted && (
+          <button
+            type="button"
+            onClick={enableSound}
+            className="absolute top-2 right-2 z-20 flex items-center gap-1.5 rounded-full bg-white px-3 py-1.5 text-xs font-semibold text-black shadow-lg hover:bg-gray-200 transition"
+          >
+            <VolumeX size={14} /> Activer le son
+          </button>
+        )}
+
         {empty && (
           <div className="absolute inset-0 flex items-center justify-center text-gray-700 text-xs">
             Cette timeline est vide
@@ -277,8 +340,10 @@ export default function LivePlayer({ sequences, sequenceId, settings, bare = fal
             track={track}
             clips={clips}
             playing={playing}
-            muted={muted}
+            muted={effectiveMuted}
+            volume={volume}
             timeRef={timeRef}
+            onBlocked={onBlocked}
           />
         ))}
       </div>
@@ -321,15 +386,34 @@ export default function LivePlayer({ sequences, sequenceId, settings, bare = fal
           {formatTime(time / PX_PER_SEC_BASE)} / {formatTime(durationSec)}
         </span>
 
-        <button
-          type="button"
-          onClick={() => setMuted(m => !m)}
-          aria-label={muted ? 'Rétablir le son' : 'Couper le son'}
-          aria-pressed={muted}
-          className="shrink-0 p-1.5 rounded text-gray-400 hover:text-white transition"
-        >
-          {muted ? <VolumeX size={15} /> : <Volume2 size={15} />}
-        </button>
+        {/* Haut-parleur : clic = couper / rétablir ; survol = réglage du volume */}
+        <div className="group/vol shrink-0 flex items-center">
+          <button
+            type="button"
+            onClick={() => setMuted(m => !m)}
+            aria-label={muted ? 'Rétablir le son' : 'Couper le son'}
+            aria-pressed={muted}
+            className="shrink-0 p-1.5 rounded text-gray-400 hover:text-white transition"
+          >
+            {muted || volume === 0 ? <VolumeX size={15} /> : <Volume2 size={15} />}
+          </button>
+          <div className="w-0 opacity-0 overflow-hidden transition-all duration-200 group-hover/vol:w-24 group-hover/vol:opacity-100 group-focus-within/vol:w-24 group-focus-within/vol:opacity-100">
+            <input
+              type="range"
+              min={0}
+              max={100}
+              step={1}
+              value={muted ? 0 : Math.round(volume * 100)}
+              onChange={(e) => {
+                const next = Number(e.target.value) / 100;
+                setVolume(next);
+                setMuted(next === 0);
+              }}
+              aria-label="Volume"
+              className="w-20 h-1 mx-1 cursor-pointer accent-white"
+            />
+          </div>
+        </div>
 
         <button
           type="button"
