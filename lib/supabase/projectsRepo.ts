@@ -32,7 +32,7 @@ const missingColumns = new Map<string, Set<string>>();
 // l'erreur de sauvegarde visible qui invite à appliquer supabase/schema.sql.
 const OPTIONAL_COLUMNS: Record<string, Set<string>> = {
   fullcrea_tracks: new Set(['solo', 'height_px', 'collapsed', 'kind', 'hidden', 'locked', 'muted']),
-  fullcrea_clips: new Set(['speed', 'fade_in_px', 'fade_out_px', 'transition', 'link_id', 'tts', 'volume', 'muted', 'source_duration_px', 'fx']),
+  fullcrea_clips: new Set(['speed', 'fade_in_px', 'fade_out_px', 'transition', 'link_id', 'tts', 'volume', 'muted', 'source_duration_px', 'fx', 'gennn_audio']),
   fullcrea_projects: new Set(['markers']),
 };
 
@@ -173,6 +173,7 @@ export async function fetchAllProjects(supabase: SupabaseClient, userId: string)
         transition?: Clip['transition'] | null; link_id?: string | null;
         transform: Clip['transform'] | null;
         fx?: Clip['fx'] | null;
+        gennn_audio?: Clip['gennnAudio'] | null;
         text_content: string | null; font_size: number | null;
         font_family: string | null; text_color: string | null;
       }) => ({
@@ -198,6 +199,7 @@ export async function fetchAllProjects(supabase: SupabaseClient, userId: string)
         linkId: c.link_id ?? undefined,
         transform: c.transform ?? undefined,
         fx: c.fx ?? undefined,
+        gennnAudio: c.gennn_audio ?? undefined,
         text: c.text_content ?? undefined,
         fontSize: c.font_size ?? undefined,
         fontFamily: c.font_family ?? undefined,
@@ -417,6 +419,7 @@ export async function upsertProject(
         link_id: c.linkId ?? null,
         transform: c.transform ?? null,
         fx: c.fx ?? null,
+        gennn_audio: c.gennnAudio ?? null,
         text_content: c.text ?? null,
         font_size: c.fontSize ?? null,
         font_family: c.fontFamily ?? null,

@@ -29,7 +29,8 @@ import {
   type TransitionDropPayload,
 } from '@/lib/assetDrag';
 import { pickTransitionTarget, transitionDurationPx } from '@/lib/timeline/effects';
-import { DEFAULT_TRANSITION_PX, transitionLabel, type TransitionType } from '@/lib/timeline/types';
+import { GennnAudioClipIcon, GennnAudioOpenButton } from './GennnAudioClipBadge';
+import { DEFAULT_TRANSITION_PX, transitionLabel, type GennnAudioLink, type TransitionType } from '@/lib/timeline/types';
 
 // Distance (px écran) autour d'un raccord où une transition déposée « accroche »
 const TRANSITION_DROP_TOLERANCE_PX = 60;
@@ -1096,7 +1097,21 @@ export default function Timeline() {
   }, [setClipsWithoutHistory]);
 
   /** Insère un média de la bibliothèque à la position (en px timeline) donnée. */
-  const insertAsset = useCallback((asset: { name: string; type: string; src: string }, atPx: number) => {
+  const insertAsset = useCallback((asset: { name: string; type: string; src: string; gennnAudio?: GennnAudioLink }, atPx: number) => {
+    // Titre Gennn Audio : clip audio sans son pour l'instant ; le rendu du
+    // projet (useGennnAudioSync) lui donne son son et sa vraie durée
+    if (asset.gennnAudio) {
+      insertClip({
+        id: newId('clip'),
+        name: asset.name,
+        type: 'audio',
+        start: Math.max(0, atPx),
+        width: INITIAL_CLIP_WIDTH_PX,
+        src: '',
+        gennnAudio: { setId: asset.gennnAudio.setId, name: asset.gennnAudio.name, renderedAt: null },
+      }, 'audio');
+      return;
+    }
     const isVideo = asset.type.startsWith('video');
     const isAudio = asset.type.startsWith('audio');
     const clipType: Clip['type'] = isVideo ? 'video' : isAudio ? 'audio' : 'image';
@@ -1146,7 +1161,7 @@ export default function Timeline() {
     const dataString = e.dataTransfer.getData("application/react-dnd")
       || e.dataTransfer.getData("text/plain");
     if (!dataString) return;
-    let data: { isNew?: boolean; id?: string; name: string; type: string; src: string; kind?: string; transition?: TransitionType };
+    let data: { isNew?: boolean; id?: string; name: string; type: string; src: string; kind?: string; transition?: TransitionType; gennnAudio?: GennnAudioLink };
     try {
       data = JSON.parse(dataString);
     } catch {
@@ -1202,12 +1217,12 @@ export default function Timeline() {
   // iPad et Safari, où le drag HTML5 est indisponible ou bloqué).
   useEffect(() => {
     const onDrop = (e: Event) => {
-      const { name, type, src, clientX } = (e as CustomEvent<AssetDropPayload>).detail;
-      insertAsset({ name, type, src }, dropPosition(clientX, NO_EXCLUDE));
+      const { name, type, src, gennnAudio, clientX } = (e as CustomEvent<AssetDropPayload>).detail;
+      insertAsset({ name, type, src, gennnAudio }, dropPosition(clientX, NO_EXCLUDE));
     };
     const onAdd = (e: Event) => {
-      const { name, type, src } = (e as CustomEvent<AssetAddPayload>).detail;
-      insertAsset({ name, type, src }, Math.max(0, currentTimeRef.current));
+      const { name, type, src, gennnAudio } = (e as CustomEvent<AssetAddPayload>).detail;
+      insertAsset({ name, type, src, gennnAudio }, Math.max(0, currentTimeRef.current));
     };
     const onTransitionDrop = (e: Event) => {
       const { type, clientX, clientY } = (e as CustomEvent<TransitionDropPayload>).detail;
@@ -1578,7 +1593,9 @@ export default function Timeline() {
                     )}
                     <div className="relative z-[1] flex items-center min-w-0 w-full">
                       {clip.type === 'sequence' && <Film size={12} className="mr-2 shrink-0 opacity-80" aria-label="Timeline imbriquée — double-clic pour l'ouvrir" />}
-                      {clip.type === 'audio' && (clip.tts
+                      {clip.type === 'audio' && (clip.gennnAudio
+                        ? <GennnAudioClipIcon link={clip.gennnAudio} />
+                        : clip.tts
                         ? <MessageSquareText size={12} className="mr-2 shrink-0 opacity-80" aria-label="Voix off générée — double-clic pour modifier" />
                         : <Music size={12} className="mr-2 shrink-0 opacity-70" />)}
                       {clip.type === 'text' && <Type size={12} className="mr-2 shrink-0 opacity-50" />}
@@ -1587,6 +1604,9 @@ export default function Timeline() {
                       )}
                       <span className="truncate drop-shadow-[0_1px_1px_rgba(0,0,0,0.6)]">{getClipLabel(clip)}</span>
                     </div>
+
+                    {/* Titre Gennn Audio : ouverture du projet dans l'application audio */}
+                    {clip.gennnAudio && <GennnAudioOpenButton link={clip.gennnAudio} />}
 
                     {/* Bouton de suppression (X rouge en haut à droite) */}
                     {!locked && (

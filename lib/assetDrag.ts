@@ -1,4 +1,4 @@
-import type { TransitionType } from '@/lib/timeline/types';
+import type { GennnAudioLink, TransitionType } from '@/lib/timeline/types';
 
 /**
  * Dépôt d'un média de la bibliothèque vers la timeline.
@@ -13,6 +13,8 @@ export type AssetDropPayload = {
   name: string;
   type: string;
   src: string;
+  /** Titre Gennn Audio : clip audio lié au projet, son rendu ensuite. */
+  gennnAudio?: GennnAudioLink;
   /** Position du pointeur au moment du lâcher, en coordonnées viewport. */
   clientX: number;
   clientY: number;

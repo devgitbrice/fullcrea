@@ -11,9 +11,12 @@ import ImagePropertyPanel from '@/components/editor/ImagePropertyPanel';
 import TextPropertyPanel from '@/components/editor/TextPropertyPanel';
 import QuickLinks from '@/components/QuickLinks';
 import { useProject } from '@/components/ProjectContext';
+import { useGennnAudioSync } from './useGennnAudioSync';
 
 export default function EditorLayout() {
   const { currentView } = useProject();
+  // Titres Gennn Audio de la timeline : son recalculé à chaque sauvegarde
+  useGennnAudioSync();
 
   useEffect(() => {
     const handleGlobalWheel = (e: WheelEvent) => {

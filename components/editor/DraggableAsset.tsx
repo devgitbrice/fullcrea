@@ -1,6 +1,7 @@
 "use client";
 
-import { DragEvent, MouseEvent, PointerEvent, useEffect, useRef, useState } from 'react';
+import { DragEvent, MouseEvent, PointerEvent, ReactNode, useEffect, useRef, useState } from 'react';
+import type { GennnAudioLink } from '@/lib/timeline/types';
 import { createPortal } from 'react-dom';
 import { FileVideo, Music, Image as ImageIcon, File, Eye, Plus } from 'lucide-react';
 import {
@@ -15,12 +16,18 @@ interface DraggableAssetProps {
   src: string;
   disabled?: boolean;
   onPreview?: () => void;
+  /** Titre Gennn Audio : le clip créé est lié au projet (son rendu ensuite) */
+  gennnAudio?: GennnAudioLink;
+  /** Icône et sous-titre personnalisés, élément ajouté en fin de ligne */
+  icon?: ReactNode;
+  subtitle?: string;
+  trailing?: ReactNode;
 }
 
 /** Distance (px) au-delà de laquelle un mouvement devient un drag. */
 const DRAG_THRESHOLD_PX = 6;
 
-export default function DraggableAsset({ name, type, src, disabled = false, onPreview }: DraggableAssetProps) {
+export default function DraggableAsset({ name, type, src, disabled = false, onPreview, gennnAudio, icon, subtitle, trailing }: DraggableAssetProps) {
   const origin = useRef<{ x: number; y: number; pointerId: number } | null>(null);
   const draggingRef = useRef(false);
   const [ghost, setGhost] = useState<{ x: number; y: number; over: boolean } | null>(null);
@@ -66,7 +73,7 @@ export default function DraggableAsset({ name, type, src, disabled = false, onPr
     endDrag();
     if (!wasDragging) return;
     if (isOverTimeline(e.clientX, e.clientY)) {
-      emitAssetDrop({ name, type, src, clientX: e.clientX, clientY: e.clientY });
+      emitAssetDrop({ name, type, src, gennnAudio, clientX: e.clientX, clientY: e.clientY });
     }
   };
 
@@ -80,7 +87,7 @@ export default function DraggableAsset({ name, type, src, disabled = false, onPr
     // Un drag natif prend le relais : on annule le drag pointeur en cours pour
     // ne pas insérer le clip deux fois.
     endDrag();
-    const payload = { isNew: true, name, type, src };
+    const payload = { isNew: true, name, type, src, gennnAudio };
     const json = JSON.stringify(payload);
     e.dataTransfer.setData('application/react-dnd', json);
     // Safari n'expose pas toujours les types MIME personnalisés au drop.
@@ -95,10 +102,11 @@ export default function DraggableAsset({ name, type, src, disabled = false, onPr
 
   const handleAddClick = (e: MouseEvent<HTMLButtonElement>) => {
     e.stopPropagation();
-    emitAssetAdd({ name, type, src });
+    emitAssetAdd({ name, type, src, gennnAudio });
   };
 
   const getIcon = () => {
+    if (icon) return icon;
     if (type.startsWith('video')) return <FileVideo size={18} className="text-blue-400" />;
     if (type.startsWith('audio')) return <Music size={18} className="text-green-400" />;
     if (type.startsWith('image')) return <ImageIcon size={18} className="text-purple-400" />;
@@ -127,8 +135,9 @@ export default function DraggableAsset({ name, type, src, disabled = false, onPr
         } ${ghost ? 'opacity-50' : ''}`}
       >
         {getIcon()}
-        <div className={`flex-1 min-w-0 text-sm truncate text-gray-400 transition-colors ${disabled ? '' : 'group-hover:text-white'}`}>
-          {name}
+        <div className={`flex-1 min-w-0 text-sm text-gray-400 transition-colors ${disabled ? '' : 'group-hover:text-white'}`}>
+          <div className="truncate">{name}</div>
+          {subtitle && <div className="truncate text-[10px] text-gray-600">{subtitle}</div>}
         </div>
         {!disabled && (
           <button
@@ -154,6 +163,7 @@ export default function DraggableAsset({ name, type, src, disabled = false, onPr
             <Eye size={12} />
           </button>
         )}
+        {trailing}
       </div>
 
       {/* Vignette qui suit le pointeur pendant le glisser */}

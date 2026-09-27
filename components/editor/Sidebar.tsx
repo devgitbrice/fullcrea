@@ -19,6 +19,7 @@ import {
 } from 'lucide-react';
 import DraggableAsset from './DraggableAsset';
 import TransitionLibrary from './TransitionLibrary';
+import GennnAudioLibrary from './GennnAudioLibrary';
 import ProjectSelector from './ProjectSelector';
 import { CreationSection } from './CreationModals';
 import RecorderModal, { RecorderMode } from './RecorderModal';
@@ -364,6 +365,8 @@ export default function Sidebar() {
             </div>
 
             {currentView === 'video' && <TransitionLibrary />}
+
+            <GennnAudioLibrary />
 
             {currentView === 'music' && (
               <div className="animate-in slide-in-from-left-4 duration-300">

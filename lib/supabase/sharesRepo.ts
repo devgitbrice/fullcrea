@@ -197,6 +197,7 @@ interface ClipRow {
   transition?: Clip['transition'] | null; link_id?: string | null;
   transform?: Clip['transform'] | null;
   fx?: Clip['fx'] | null;
+  gennn_audio?: Clip['gennnAudio'] | null;
   text_content?: string | null; font_size?: number | null;
   font_family?: string | null; text_color?: string | null;
 }
@@ -240,6 +241,7 @@ function toClip(c: ClipRow): Clip {
     sequenceRef: c.sequence_ref ?? undefined,
     transform: c.transform ?? undefined,
     fx: c.fx ?? undefined,
+    gennnAudio: c.gennn_audio ?? undefined,
     text: c.text_content ?? undefined,
     fontSize: c.font_size ?? undefined,
     fontFamily: c.font_family ?? undefined,

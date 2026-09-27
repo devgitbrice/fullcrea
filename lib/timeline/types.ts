@@ -41,6 +41,9 @@ export interface Clip {
   transform?: ImageTransform;
   // Effets visuels (images et vidéos) : onglet FX du panneau de droite
   fx?: ClipFx;
+  // Clip audio lié à un titre Gennn Audio : son rendu depuis le projet et
+  // remplacé automatiquement à chaque sauvegarde dans Gennn Audio
+  gennnAudio?: GennnAudioLink;
   // Voix off générée : texte et voix d'origine, pour rééditer et régénérer
   tts?: { text: string; voice: string };
   // Clip de type 'sequence' : id de la timeline insérée
@@ -65,6 +68,13 @@ export interface ZoomFx {
   direction: 'in' | 'out';
   depth: number;            // 0..100 (%)
   curve: 'linear' | 'exponential';
+}
+
+export interface GennnAudioLink {
+  setId: string;
+  name: string;
+  /** Date de sauvegarde du projet Gennn Audio au dernier rendu (null = jamais rendu) */
+  renderedAt?: string | null;
 }
 
 export interface ClipFx {

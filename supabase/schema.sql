@@ -195,6 +195,7 @@ ALTER TABLE fullcrea_clips
   ADD COLUMN IF NOT EXISTS fade_out_px  DOUBLE PRECISION CHECK (fade_out_px IS NULL OR fade_out_px >= 0),
   ADD COLUMN IF NOT EXISTS transition   JSONB,
   ADD COLUMN IF NOT EXISTS fx           JSONB,
+  ADD COLUMN IF NOT EXISTS gennn_audio  JSONB,
   ADD COLUMN IF NOT EXISTS link_id      TEXT;
 
 -- Pistes : solo, hauteur personnalisée, repli
