@@ -196,6 +196,29 @@ export default function LivePlayer({ sequences, sequenceId, settings, bare = fal
     setPlaying(p => !p);
   };
 
+  // Barre d'espace = lecture / pause, dans le lecteur ou depuis la page qui
+  // l'intègre (Muxeo envoie { type: 'cut:toggle-play' } par postMessage)
+  const togglePlayRef = useRef(togglePlay);
+  useEffect(() => { togglePlayRef.current = togglePlay; });
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.code !== 'Space' || e.repeat || e.ctrlKey || e.metaKey || e.altKey) return;
+      const target = e.target as HTMLElement | null;
+      if (target?.closest('input, textarea, select, [contenteditable="true"]')) return;
+      e.preventDefault();
+      togglePlayRef.current();
+    };
+    const onMessage = (e: MessageEvent) => {
+      if (e.data && typeof e.data === 'object' && e.data.type === 'cut:toggle-play') togglePlayRef.current();
+    };
+    window.addEventListener('keydown', onKey);
+    window.addEventListener('message', onMessage);
+    return () => {
+      window.removeEventListener('keydown', onKey);
+      window.removeEventListener('message', onMessage);
+    };
+  }, []);
+
   const toggleFullscreen = () => {
     const el = containerRef.current;
     if (!el) return;
