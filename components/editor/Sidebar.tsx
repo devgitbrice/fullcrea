@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, ChangeEvent, useState } from 'react';
+import { useRef, ChangeEvent, DragEvent, useState } from 'react';
 import {
   Upload,
   Video,
@@ -42,9 +42,16 @@ function writeCollapsed(value: boolean) {
   }
 }
 
+// Médias acceptés (même filtre que le sélecteur de fichiers)
+const isMediaFile = (file: File) =>
+  /^(image|video|audio)\//.test(file.type) || /\.(wav|mp3)$/i.test(file.name);
+
 export default function Sidebar() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [isUploading, setIsUploading] = useState(false);
+  // Import de plusieurs fichiers : { fait, total } pour « Import 2/5… »
+  const [importProgress, setImportProgress] = useState<{ done: number; total: number } | null>(null);
+  const [isDragOver, setIsDragOver] = useState(false);
   const [collapsed, setCollapsed] = useState(readCollapsed);
   const [recorderMode, setRecorderMode] = useState<RecorderMode | null>(null);
   const { toast } = useToast();
@@ -80,34 +87,97 @@ export default function Sidebar() {
 
   const handleImportClick = () => fileInputRef.current?.click();
 
-  const handleFileChange = async (event: ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    if (!file) return;
-    event.target.value = '';
+  // Import de un ou plusieurs fichiers, envoyés un par un dans l'ordre choisi :
+  // chaque média rejoint la bibliothèque dès qu'il est prêt, un échec n'arrête pas les suivants
+  const importFiles = async (files: File[]) => {
+    if (files.length === 0 || isUploading) return;
     setIsUploading(true);
-    try {
-      const asset = await uploadAssetFile(file);
-      setAssets((prev) => [...prev, asset]);
-      toast({ type: 'success', message: `${file.name} ajouté à la bibliothèque` });
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : 'Erreur inconnue';
-      console.error('[fullcrea] Import échoué', e);
-      toast({ type: 'error', message: `Import échoué : ${msg}` });
-    } finally {
-      setIsUploading(false);
+    setImportProgress({ done: 0, total: files.length });
+    const failed: string[] = [];
+    for (const [i, file] of files.entries()) {
+      try {
+        const asset = await uploadAssetFile(file);
+        setAssets((prev) => [...prev, asset]);
+      } catch (e) {
+        failed.push(file.name);
+        const msg = e instanceof Error ? e.message : 'Erreur inconnue';
+        console.error('[fullcrea] Import échoué', file.name, e);
+        if (files.length === 1) toast({ type: 'error', message: `Import échoué : ${msg}` });
+      }
+      setImportProgress({ done: i + 1, total: files.length });
     }
+    const ok = files.length - failed.length;
+    if (files.length === 1) {
+      if (ok === 1) toast({ type: 'success', message: `${files[0].name} ajouté à la bibliothèque` });
+    } else if (failed.length === 0) {
+      toast({ type: 'success', message: `${ok} fichiers ajoutés à la bibliothèque` });
+    } else {
+      toast({
+        type: 'error',
+        message: `${ok}/${files.length} fichiers ajoutés — échec : ${failed.join(', ')}`,
+      });
+    }
+    setIsUploading(false);
+    setImportProgress(null);
   };
+
+  const handleFileChange = (event: ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(event.target.files ?? []);
+    event.target.value = '';
+    void importFiles(files);
+  };
+
+  // Fichiers glissés depuis l'ordinateur (pas les médias de la bibliothèque)
+  const hasOsFiles = (e: DragEvent) => Array.from(e.dataTransfer.types).includes('Files');
+
+  const handleDragOver = (e: DragEvent<HTMLDivElement>) => {
+    if (!hasOsFiles(e)) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+    if (!isDragOver) setIsDragOver(true);
+  };
+
+  const handleDragLeave = (e: DragEvent<HTMLDivElement>) => {
+    if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
+    setIsDragOver(false);
+  };
+
+  const handleDrop = (e: DragEvent<HTMLDivElement>) => {
+    if (!hasOsFiles(e)) return;
+    e.preventDefault();
+    setIsDragOver(false);
+    const all = Array.from(e.dataTransfer.files);
+    const media = all.filter(isMediaFile);
+    if (media.length < all.length) {
+      toast({ type: 'error', message: `${all.length - media.length} fichier(s) ignoré(s) : ni image, ni vidéo, ni audio` });
+    }
+    void importFiles(media);
+  };
+
+  const importLabel = importProgress
+    ? (importProgress.total > 1 ? `Import ${Math.min(importProgress.done + 1, importProgress.total)}/${importProgress.total}…` : 'Import en cours…')
+    : 'Importer Média';
 
   return (
     <div
-      className={`${collapsed ? 'w-12' : 'w-64'} bg-gray-950 border-r border-gray-800 flex flex-col h-full text-gray-300 shrink-0 select-none overflow-hidden transition-[width] duration-200`}
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+      className={`relative ${collapsed ? 'w-12' : 'w-64'} bg-gray-950 border-r border-gray-800 flex flex-col h-full text-gray-300 shrink-0 select-none overflow-hidden transition-[width] duration-200`}
     >
+      {isDragOver && (
+        <div className="pointer-events-none absolute inset-1 z-50 flex flex-col items-center justify-center gap-2 rounded-lg border-2 border-dashed border-blue-500 bg-blue-950/80 text-center text-xs font-medium text-blue-100 p-2">
+          <Upload size={20} />
+          {!collapsed && 'Déposer pour importer'}
+        </div>
+      )}
       <input
         type="file"
         ref={fileInputRef}
         onChange={handleFileChange}
         className="hidden"
         accept="image/*,video/*,audio/*,.wav,.mp3"
+        multiple
       />
 
       {collapsed ? (
@@ -125,7 +195,7 @@ export default function Sidebar() {
           <button
             onClick={handleImportClick}
             disabled={isUploading}
-            title={isUploading ? 'Import en cours…' : 'Importer Média'}
+            title={isUploading ? importLabel : 'Importer des médias (plusieurs fichiers possibles)'}
             aria-label="Importer Média"
             className="p-2 rounded bg-blue-600 hover:bg-blue-700 disabled:bg-gray-700 disabled:cursor-not-allowed text-white transition shadow-lg shadow-blue-900/20"
           >
@@ -189,7 +259,7 @@ export default function Sidebar() {
                 className="w-full flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-700 disabled:cursor-not-allowed text-white py-2 rounded text-sm font-medium transition shadow-lg shadow-blue-900/20"
               >
                 <Upload size={16} />
-                {isUploading ? 'Import en cours…' : 'Importer Média'}
+                {importLabel}
               </button>
               <div className="grid grid-cols-3 gap-1">
                 <button

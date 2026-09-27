@@ -1521,7 +1521,7 @@ export function ProjectProvider({ children, initialProjectId, editToken, readOnl
     if (supabase && userId && currentProjectId) {
       const result = await uploadAsset(supabase, userId, currentProjectId, file);
       return {
-        id: `imported_${Date.now()}`,
+        id: newId(`imported_${Date.now()}`),
         name: file.name,
         type,
         src: result.src,
@@ -1530,7 +1530,7 @@ export function ProjectProvider({ children, initialProjectId, editToken, readOnl
 
     // Mode local : blob URL, valide pour la session courante seulement.
     return {
-      id: `imported_${Date.now()}`,
+      id: newId(`imported_${Date.now()}`),
       name: file.name,
       type,
       src: URL.createObjectURL(file),
