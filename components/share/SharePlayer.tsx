@@ -30,8 +30,9 @@ export interface ShareUpdates {
  * Charge un partage (lecture publique, sans compte). Un partage en direct est
  * surveillé en continu : les modifications du projet ne remplacent PAS la
  * lecture en cours, elles sont signalées et appliquées au rafraîchissement.
+ * Avec `autoApply`, elles sont appliquées dès qu'elles sont détectées.
  */
-export function useShare(id: string): { state: State; updates: ShareUpdates } {
+export function useShare(id: string, { autoApply = false }: { autoApply?: boolean } = {}): { state: State; updates: ShareUpdates } {
   const [state, setState] = useState<State>({ status: 'loading' });
   const [count, setCount] = useState(0);
   const [dismissedAt, setDismissedAt] = useState(0);
@@ -59,8 +60,15 @@ export function useShare(id: string): { state: State; updates: ShareUpdates } {
           shownRef.current = stamp;
           setState({ status: 'ready', payload });
         } else if (stamp !== shownRef.current) {
-          // Le projet a été sauvegardé : on prévient sans interrompre la lecture
           shownRef.current = stamp;
+          if (autoApply) {
+            // Intégration qui suit le projet (ex. Muxeo) : le montage est
+            // remplacé sur place, le lecteur garde sa position de lecture
+            setState({ status: 'ready', payload });
+            if (payload.share.live) schedule();
+            return;
+          }
+          // Le projet a été sauvegardé : on prévient sans interrompre la lecture
           setCount(n => n + 1);
           void playUpdateChime();
         }
@@ -86,7 +94,7 @@ export function useShare(id: string): { state: State; updates: ShareUpdates } {
       cancelled = true;
       if (timer) clearTimeout(timer);
     };
-  }, [id]);
+  }, [id, autoApply]);
 
   const refresh = useCallback(() => window.location.reload(), []);
   const dismiss = useCallback(() => setDismissedAt(count), [count]);
