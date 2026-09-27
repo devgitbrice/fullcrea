@@ -7,7 +7,7 @@ const APP_URL = "https://app.gennn.live/login";
 // Lien vers l'application principale, affiché en bas à droite une fois connecté
 export default function QuickLinks() {
   return (
-    <div className="fixed bottom-4 right-4 z-50">
+    <div className="fixed bottom-4 right-4 z-50 hidden md:block">
       <a
         href={APP_URL}
         target="_blank"

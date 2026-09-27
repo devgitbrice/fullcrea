@@ -31,7 +31,8 @@ export default function EditorChrome() {
   return (
     <>
       {!inlineChrome && (
-        <div className="fixed right-4 top-4 z-50 flex items-center gap-2">
+        // Masqué sur téléphone : la barre fixe recouvrirait l'éditeur
+        <div className="fixed right-4 top-4 z-50 hidden md:flex items-center gap-2">
           <ChromeLinks />
         </div>
       )}

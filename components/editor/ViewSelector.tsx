@@ -37,14 +37,15 @@ export default function ViewSelector() {
             onClick={() => setCurrentView(id)}
             aria-pressed={isActive}
             title={title}
-            className={`flex items-center gap-1.5 px-4 py-1 rounded-full text-sm font-medium transition-all duration-200 ${
+            aria-label={label}
+            className={`flex items-center gap-1.5 px-3 sm:px-4 py-1 rounded-full text-sm font-medium transition-all duration-200 ${
               isActive
                 ? 'bg-blue-600 text-white shadow-lg shadow-blue-900/50'
                 : 'bg-gray-800 text-gray-400 hover:bg-gray-700 hover:text-gray-200'
             }`}
           >
             <Icon size={14} />
-            <span>{label}</span>
+            <span className={isActive ? '' : 'hidden sm:inline'}>{label}</span>
           </button>
         );
       })}

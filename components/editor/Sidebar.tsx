@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, ChangeEvent, DragEvent, useState } from 'react';
+import { useRef, ChangeEvent, DragEvent, useEffect, useState } from 'react';
 import {
   Upload,
   Video,
@@ -23,6 +23,8 @@ import { CreationSection } from './CreationModals';
 import RecorderModal, { RecorderMode } from './RecorderModal';
 import { useProject } from '@/components/ProjectContext';
 import { useToast } from '@/components/Toast';
+import { useIsMobile } from '@/lib/hooks/useIsMobile';
+import { ASSET_ADD_EVENT, ASSET_DROP_EVENT } from '@/lib/assetDrag';
 
 const SIDEBAR_COLLAPSED_KEY = 'fullcrea_sidebar_collapsed';
 
@@ -53,6 +55,11 @@ export default function Sidebar() {
   const [importProgress, setImportProgress] = useState<{ done: number; total: number } | null>(null);
   const [isDragOver, setIsDragOver] = useState(false);
   const [collapsed, setCollapsed] = useState(readCollapsed);
+  // Téléphone : la bibliothèque est un tiroir, fermé par défaut, ouvert par-dessus l'éditeur
+  const isMobile = useIsMobile();
+  const [mobileOpen, setMobileOpen] = useState(false);
+  const isCollapsed = isMobile ? !mobileOpen : collapsed;
+  const isDrawer = isMobile && mobileOpen;
   const [recorderMode, setRecorderMode] = useState<RecorderMode | null>(null);
   const { toast } = useToast();
 
@@ -79,7 +86,23 @@ export default function Sidebar() {
     { name: 'EQ 3-Band', type: 'audio', src: '' },
   ];
 
+  // Tiroir refermé dès qu'un média part sur la timeline, pour voir le résultat
+  useEffect(() => {
+    if (!isDrawer) return;
+    const close = () => setMobileOpen(false);
+    window.addEventListener(ASSET_ADD_EVENT, close);
+    window.addEventListener(ASSET_DROP_EVENT, close);
+    return () => {
+      window.removeEventListener(ASSET_ADD_EVENT, close);
+      window.removeEventListener(ASSET_DROP_EVENT, close);
+    };
+  }, [isDrawer]);
+
   const toggleCollapsed = () => {
+    if (isMobile) {
+      setMobileOpen((open) => !open);
+      return;
+    }
     const next = !collapsed;
     setCollapsed(next);
     writeCollapsed(next);
@@ -159,16 +182,28 @@ export default function Sidebar() {
     : 'Importer Média';
 
   return (
+    <>
+    {isDrawer && (
+      <>
+        {/* Place du rail dans la mise en page + fond qui referme le tiroir */}
+        <div className="w-12 shrink-0 bg-gray-950 border-r border-gray-800" />
+        <div
+          className="fixed inset-0 z-[55] bg-black/60"
+          onClick={() => setMobileOpen(false)}
+          aria-hidden
+        />
+      </>
+    )}
     <div
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
-      className={`relative ${collapsed ? 'w-12' : 'w-64'} bg-gray-950 border-r border-gray-800 flex flex-col h-full text-gray-300 shrink-0 select-none overflow-hidden transition-[width] duration-200`}
+      className={`${isDrawer ? 'fixed inset-y-0 left-0 z-[60] shadow-2xl' : 'relative'} ${isCollapsed ? 'w-12' : 'w-64'} bg-gray-950 border-r border-gray-800 flex flex-col h-full text-gray-300 shrink-0 select-none overflow-hidden transition-[width] duration-200`}
     >
       {isDragOver && (
         <div className="pointer-events-none absolute inset-1 z-50 flex flex-col items-center justify-center gap-2 rounded-lg border-2 border-dashed border-blue-500 bg-blue-950/80 text-center text-xs font-medium text-blue-100 p-2">
           <Upload size={20} />
-          {!collapsed && 'Déposer pour importer'}
+          {!isCollapsed && 'Déposer pour importer'}
         </div>
       )}
       <input
@@ -180,7 +215,7 @@ export default function Sidebar() {
         multiple
       />
 
-      {collapsed ? (
+      {isCollapsed ? (
         /* --- RAIL RÉDUIT --- */
         <div className="flex flex-col items-center gap-2 p-2">
           <button
@@ -397,6 +432,7 @@ export default function Sidebar() {
         <RecorderModal mode={recorderMode} onClose={() => setRecorderMode(null)} />
       )}
     </div>
+    </>
   );
 }
 

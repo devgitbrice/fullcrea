@@ -40,7 +40,8 @@ export default function ImagePropertyPanel() {
   };
 
   return (
-    <div className="w-72 max-w-[40vw] min-w-[220px] bg-gray-900 border-l border-gray-800 flex flex-col h-full overflow-hidden">
+    // Téléphone : panneau par-dessus le lecteur au lieu de l'écraser
+    <div className="absolute inset-y-0 right-0 z-20 w-[85%] shadow-2xl md:static md:z-auto md:shadow-none md:w-72 md:max-w-[40vw] md:min-w-[220px] bg-gray-900 border-l border-gray-800 flex flex-col h-full overflow-hidden">
       {/* Header */}
       <div className="p-4 border-b border-gray-800">
         <div className="flex items-center justify-between gap-2">

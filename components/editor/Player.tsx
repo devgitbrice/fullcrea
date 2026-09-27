@@ -360,15 +360,18 @@ export default function Player() {
 
       {/* ÉCRAN VISUEL (Seulement en mode Vidéo) */}
       {isVideoMode && (
-        <div className="flex-1 flex flex-col items-center justify-center bg-gray-900 p-6 overflow-hidden relative z-0">
+        <div
+          className="flex-1 min-h-0 flex flex-col items-center justify-center bg-gray-900 p-2 md:p-6 overflow-hidden relative z-0"
+          style={{ containerType: 'size' }}
+        >
+            {/* Cadre au format du projet, ajusté à la place disponible dans les
+                deux sens (sur iPhone la largeur limite, sur ordinateur la hauteur) */}
             <div
               className="bg-black shadow-2xl flex items-center justify-center relative overflow-hidden border border-gray-800 rounded-sm z-0"
               style={{
                 aspectRatio: `${projectSettings.width} / ${projectSettings.height}`,
-                maxHeight: '100%',
-                maxWidth: '100%',
-                width: 'auto',
-                height: '100%',
+                width: `min(100cqw, 100cqh * ${projectSettings.width} / ${projectSettings.height})`,
+                height: 'auto',
               }}
             >
 
@@ -451,7 +454,7 @@ export default function Player() {
       )}
 
       {/* CONTRÔLES */}
-      <div className="h-16 flex items-center justify-between bg-gray-950 border-t border-gray-800 px-6 select-none z-30 relative shrink-0">
+      <div className="h-16 flex items-center justify-between gap-2 bg-gray-950 border-t border-gray-800 px-3 md:px-6 select-none z-30 relative shrink-0">
         {/* Barre de progression : collée au bord haut, sans ajouter de hauteur
             (la vue podcast/musique ne laisse que 64 px au Player) */}
         <div
@@ -477,15 +480,15 @@ export default function Player() {
         </div>
 
         <div
-          className="w-48 shrink min-w-0 overflow-hidden whitespace-nowrap font-mono text-xs tabular-nums"
+          className="w-24 sm:w-48 shrink min-w-0 overflow-hidden whitespace-nowrap font-mono text-xs tabular-nums"
           title="Position / Durée (HH:MM:SS:II)"
         >
           <span className="text-blue-400 font-medium">{currentTimecode}</span>
-          <span className="text-gray-600 mx-1.5" aria-hidden="true">/</span>
-          <span className="text-gray-500">{totalTimecode}</span>
+          <span className="hidden sm:inline text-gray-600 mx-1.5" aria-hidden="true">/</span>
+          <span className="hidden sm:inline text-gray-500">{totalTimecode}</span>
         </div>
 
-        <div className="flex items-center gap-3 shrink-0">
+        <div className="flex items-center gap-1 sm:gap-3 shrink-0">
           <button
             onClick={jumpToStart}
             disabled={currentTime <= 0}
@@ -499,7 +502,7 @@ export default function Player() {
           <button
             onClick={() => step(-1, frameStepPx)}
             disabled={currentTime <= 0}
-            className={transportButtonClass}
+            className={`${transportButtonClass} hidden sm:block`}
             title="Image précédente (←)"
             aria-label="Image précédente (←)"
           >
@@ -520,7 +523,7 @@ export default function Player() {
 
           <button
             onClick={() => step(1, frameStepPx)}
-            className={transportButtonClass}
+            className={`${transportButtonClass} hidden sm:block`}
             title="Image suivante (→)"
             aria-label="Image suivante (→)"
           >
@@ -538,7 +541,7 @@ export default function Player() {
           </button>
         </div>
 
-        <div className="w-48 shrink min-w-0 flex items-center justify-end">
+        <div className="w-10 sm:w-48 shrink min-w-0 flex items-center justify-end">
           <button
             onClick={() => setLoop(prev => !prev)}
             aria-pressed={loop}

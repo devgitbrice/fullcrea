@@ -33,10 +33,10 @@ export default function ProjectHeader() {
   };
 
   return (
-    <div className="min-h-14 bg-gray-950 border-b border-gray-800 flex flex-wrap items-center justify-between gap-x-4 gap-y-2 px-6 py-2 select-none">
+    <div className="min-h-14 bg-gray-950 border-b border-gray-800 flex flex-wrap items-center justify-between gap-x-4 gap-y-2 px-3 md:px-6 py-2 select-none">
 
       <div className="flex flex-wrap items-center gap-2 text-gray-400 text-sm min-w-0">
-        <Monitor size={16} className="shrink-0" />
+        <Monitor size={16} className="shrink-0 hidden md:block" />
         {renaming ? (
           <input
             ref={inputRef}
@@ -59,12 +59,12 @@ export default function ProjectHeader() {
             aria-label={`Renommer le projet (${currentProject.name})`}
             className="group flex items-center gap-1.5 min-w-0 px-1 py-0.5 -mx-1 rounded hover:bg-gray-900 transition [@media(pointer:coarse)]:min-h-11"
           >
-            <span className="font-medium text-gray-200 truncate max-w-[16rem]">{currentProject.name}</span>
+            <span className="font-medium text-gray-200 truncate max-w-[10rem] md:max-w-[16rem]">{currentProject.name}</span>
             <Pencil size={12} className="shrink-0 text-gray-600 group-hover:text-gray-300 transition" />
           </button>
         )}
-        <span className="text-gray-600">/</span>
-        <span>Édition</span>
+        <span className="text-gray-600 hidden md:inline">/</span>
+        <span className="hidden md:inline">Édition</span>
         {accessRole === 'editor' && (
           <span
             className="flex items-center gap-1 text-[10px] uppercase tracking-wider text-purple-300 bg-purple-950/40 border border-purple-900 rounded-full px-2 py-0.5"
@@ -105,17 +105,17 @@ export default function ProjectHeader() {
         </div>
 
         {/* Infos résolution / FPS */}
-        <div className="flex items-center gap-4 bg-gray-900 px-3 py-1.5 rounded-md border border-gray-800">
-          <div className="flex flex-col items-end leading-none">
+        <div className="flex items-center gap-4 bg-gray-900 px-1 md:px-3 py-1 md:py-1.5 rounded-md border border-gray-800">
+          <div className="hidden md:flex flex-col items-end leading-none">
             <span className="text-xs font-bold text-blue-400 tabular-nums">
               {projectSettings.width} × {projectSettings.height}
             </span>
             <span className="text-[10px] text-gray-500">RES</span>
           </div>
 
-          <div className="w-px h-6 bg-gray-800"></div>
+          <div className="hidden md:block w-px h-6 bg-gray-800"></div>
 
-          <div className="flex flex-col items-end leading-none">
+          <div className="hidden md:flex flex-col items-end leading-none">
             <span className="text-xs font-bold text-green-400 tabular-nums">
               {projectSettings.fps} FPS
             </span>
@@ -129,7 +129,7 @@ export default function ProjectHeader() {
             aria-haspopup="dialog"
             aria-expanded={settingsOpen}
             title="Paramètres du projet"
-            className="ml-2 p-1.5 hover:bg-gray-800 rounded-full text-gray-500 hover:text-gray-200 transition"
+            className="md:ml-2 p-1.5 hover:bg-gray-800 rounded-full text-gray-500 hover:text-gray-200 transition"
           >
             <Settings size={14} />
           </button>

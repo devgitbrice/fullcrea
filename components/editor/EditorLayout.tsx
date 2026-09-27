@@ -34,7 +34,7 @@ export default function EditorLayout() {
   }, []);
 
   return (
-    <div className="flex h-screen bg-black text-white overflow-hidden relative font-sans flex-col">
+    <div className="flex h-screen h-[100dvh] bg-black text-white overflow-hidden relative font-sans flex-col">
         <ViewSelector />
         <div className="flex flex-1 overflow-hidden">
             <Sidebar />
@@ -42,7 +42,7 @@ export default function EditorLayout() {
               <ProjectHeader />
               <div className={`
                  relative z-0 bg-gray-900 border-b border-gray-800 transition-all duration-300 ease-in-out
-                 ${currentView === 'video' ? 'h-[60%]' : 'h-16 shrink-0'}
+                 ${currentView === 'video' ? 'h-[45%] md:h-[60%]' : 'h-16 shrink-0'}
               `}>
                 <div className="flex h-full">
                   <div className="flex-1">
