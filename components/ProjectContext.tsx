@@ -1416,11 +1416,12 @@ export function ProjectProvider({ children, initialProjectId, editToken, readOnl
     await run;
   }, []);
 
-  // --- MÉDIAS AJOUTÉS AILLEURS ---
-  // Gennn Media (iPhone) ou l'appli Mac peuvent ajouter des médias au projet
-  // ouvert : on les fait apparaître (toutes les 20 s et au retour sur la page).
-  // Un média que cette page a retiré (connu de la dernière sauvegarde mais
-  // absent de l'état) n'est pas remis.
+  // --- MÉDIAS GÉRÉS AILLEURS ---
+  // Gennn Media (iPhone) ou l'appli Mac peuvent ajouter, renommer ou supprimer
+  // des médias du projet ouvert : la page suit (toutes les 20 s et au retour sur
+  // la page). La dernière sauvegarde dit ce que la page savait de la base : un
+  // média qu'elle y connaissait et qui n'y est plus a été supprimé ailleurs ; un
+  // média retiré ici mais encore en base reste retiré (la sauvegarde l'effacera).
   useEffect(() => {
     if (!isHydrated || !isPersistenceCloud) return;
     let stopped = false;
@@ -1433,13 +1434,27 @@ export function ProjectProvider({ children, initialProjectId, editToken, readOnl
         if (stopped || projectId !== currentProjectIdRef.current) return;
         const current = projectsRef.current.find(p => p.id === projectId);
         const saved = lastSavedRef.current.get(projectId);
-        if (!current) return;
-        const known = new Set([...current.assets, ...(saved?.assets ?? [])].map(a => a.id));
-        const added = remote.filter(a => !known.has(a.id));
-        if (added.length === 0) return;
-        // Désormais connus : s'ils sont retirés ici, la sauvegarde les effacera
-        if (saved) lastSavedRef.current.set(projectId, { ...saved, assets: [...saved.assets, ...added] });
-        setProjects(prev => prev.map(p => p.id === projectId ? { ...p, assets: [...p.assets, ...added] } : p));
+        if (!current || !saved) return;
+        const remoteById = new Map(remote.map(a => [a.id, a]));
+        const savedById = new Map(saved.assets.map(a => [a.id, a]));
+        const currentIds = new Set(current.assets.map(a => a.id));
+        let changed = false;
+        const kept = current.assets.flatMap(a => {
+          const r = remoteById.get(a.id);
+          const s = savedById.get(a.id);
+          if (s && !r) { changed = true; return []; }                       // supprimé ailleurs
+          if (r && s && r.name !== s.name && a.name === s.name) {           // renommé ailleurs
+            changed = true;
+            return [{ ...a, name: r.name }];
+          }
+          return [a];
+        });
+        const added = remote.filter(a => !currentIds.has(a.id) && !savedById.has(a.id));
+        if (added.length > 0) changed = true;
+        // La base telle qu'elle est maintenant : référence de la prochaine sauvegarde
+        lastSavedRef.current.set(projectId, { ...saved, assets: remote });
+        if (!changed) return;
+        setProjects(prev => prev.map(p => p.id === projectId ? { ...p, assets: [...kept, ...added] } : p));
       } catch (e) {
         console.warn('[fullcrea] Lecture des médias distants échouée', e);
       }
