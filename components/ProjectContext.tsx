@@ -4,7 +4,7 @@ import { shouldIgnoreShortcut } from '@/lib/keyboard';
 import { createContext, useContext, useState, useEffect, useLayoutEffect, useRef, ReactNode, Dispatch, SetStateAction, useCallback, useMemo, MutableRefObject } from 'react';
 import { SupabaseClient } from '@supabase/supabase-js';
 import { getSupabase, getCurrentUser } from '@/lib/supabase/client';
-import { fetchAllProjects, upsertProject, deleteProjectRow, uploadAsset, joinProjectByToken } from '@/lib/supabase/projectsRepo';
+import { fetchAllProjects, fetchProjectAssets, upsertProject, deleteProjectRow, uploadAsset, joinProjectByToken } from '@/lib/supabase/projectsRepo';
 import { useBeforeUnload } from '@/lib/hooks/useBeforeUnload';
 import type { Clip, Track, Marker, ImageTransform, Asset, ViewMode, ProjectSettings, Project, TrackKind, Sequence } from '@/lib/timeline/types';
 import { EMPTY_MARKERS, PX_PER_SEC_BASE, MIN_CLIP_WIDTH_PX } from '@/lib/timeline/types';
@@ -1408,13 +1408,52 @@ export function ProjectProvider({ children, initialProjectId, editToken, readOnl
       // Seul le projet courant est écrit : c'est lui que le lien va montrer
       const p = projectsRef.current.find(x => x.id === currentProjectIdRef.current);
       if (!p || lastSavedRef.current.get(p.id) === p) return;
-      await upsertProject(supabase, userId, p);
+      await upsertProject(supabase, userId, p, lastSavedRef.current.get(p.id));
       lastSavedRef.current.set(p.id, p);
     });
     // La file de sauvegarde ne doit pas rester bloquée sur un échec
     saveChainRef.current = run.catch(() => {});
     await run;
   }, []);
+
+  // --- MÉDIAS AJOUTÉS AILLEURS ---
+  // Gennn Media (iPhone) ou l'appli Mac peuvent ajouter des médias au projet
+  // ouvert : on les fait apparaître (toutes les 20 s et au retour sur la page).
+  // Un média que cette page a retiré (connu de la dernière sauvegarde mais
+  // absent de l'état) n'est pas remis.
+  useEffect(() => {
+    if (!isHydrated || !isPersistenceCloud) return;
+    let stopped = false;
+    const pull = async () => {
+      const supabase = supabaseRef.current;
+      const projectId = currentProjectIdRef.current;
+      if (!supabase || !userIdRef.current || document.visibilityState !== 'visible') return;
+      try {
+        const remote = await fetchProjectAssets(supabase, projectId);
+        if (stopped || projectId !== currentProjectIdRef.current) return;
+        const current = projectsRef.current.find(p => p.id === projectId);
+        const saved = lastSavedRef.current.get(projectId);
+        if (!current) return;
+        const known = new Set([...current.assets, ...(saved?.assets ?? [])].map(a => a.id));
+        const added = remote.filter(a => !known.has(a.id));
+        if (added.length === 0) return;
+        // Désormais connus : s'ils sont retirés ici, la sauvegarde les effacera
+        if (saved) lastSavedRef.current.set(projectId, { ...saved, assets: [...saved.assets, ...added] });
+        setProjects(prev => prev.map(p => p.id === projectId ? { ...p, assets: [...p.assets, ...added] } : p));
+      } catch (e) {
+        console.warn('[fullcrea] Lecture des médias distants échouée', e);
+      }
+    };
+    pull();
+    const id = setInterval(pull, 20_000);
+    const onVisible = () => { if (document.visibilityState === 'visible') pull(); };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      stopped = true;
+      clearInterval(id);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
+  }, [isHydrated, isPersistenceCloud, currentProjectId]);
 
   // --- SAUVEGARDE DEBOUNCED ---
   useEffect(() => {
@@ -1446,7 +1485,7 @@ export function ProjectProvider({ children, initialProjectId, editToken, readOnl
           try {
             for (const p of snapshot) {
               if (lastSavedRef.current.get(p.id) === p) continue;
-              await upsertProject(supabase, userId, p);
+              await upsertProject(supabase, userId, p, lastSavedRef.current.get(p.id));
               lastSavedRef.current.set(p.id, p);
             }
             const currentIds = new Set(snapshot.map(p => p.id));

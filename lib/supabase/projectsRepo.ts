@@ -322,7 +322,11 @@ export async function joinProjectByToken(
 export async function upsertProject(
   supabase: SupabaseClient,
   userId: string,
-  p: Project
+  p: Project,
+  // Dernière version enregistrée (ou chargée) de ce projet : seuls les médias
+  // qu'elle contenait et que `p` n'a plus sont effacés. Un média ajouté ailleurs
+  // (Gennn Media sur iPhone, appli Mac) et pas encore vu par cette page est gardé.
+  previous?: Project
 ): Promise<void> {
   // Quatre étapes, chacune en parallèle : (1) projet + réglages, (2) pistes,
   // (3) clips + assets (FK vers les pistes pour les clips), (4) nettoyage.
@@ -449,8 +453,27 @@ export async function upsertProject(
   await Promise.all([
     deleteStale(supabase, 'fullcrea_clips', p.id, 'id', safeClips.map(({ c }) => c.id), 'Nettoyage fullcrea_clips échoué')
       .then(() => deleteStale(supabase, 'fullcrea_tracks', p.id, 'track_index', allTracks.map(({ t }) => t.id), 'Nettoyage fullcrea_tracks échoué')),
-    deleteStale(supabase, 'fullcrea_assets', p.id, 'id', persistableAssets.map(a => a.id), 'Nettoyage fullcrea_assets échoué'),
+    previous
+      ? deleteRemovedAssets(supabase, p.id, previous.assets.map(a => a.id).filter(id => !persistableAssets.some(a => a.id === id)))
+      : deleteStale(supabase, 'fullcrea_assets', p.id, 'id', persistableAssets.map(a => a.id), 'Nettoyage fullcrea_assets échoué'),
   ]);
+}
+
+async function deleteRemovedAssets(supabase: SupabaseClient, projectId: string, ids: string[]): Promise<void> {
+  if (ids.length === 0) return;
+  const { error } = await supabase.from('fullcrea_assets').delete().eq('project_id', projectId).in('id', ids);
+  if (error) throw pgError('Nettoyage fullcrea_assets échoué', error);
+}
+
+// Médias du projet en base (pour faire apparaître ceux ajoutés depuis un autre appareil).
+export async function fetchProjectAssets(supabase: SupabaseClient, projectId: string): Promise<Asset[]> {
+  const { data, error } = await supabase
+    .from('fullcrea_assets')
+    .select('id, name, type, src')
+    .eq('project_id', projectId)
+    .order('created_at', { ascending: true });
+  if (error) throw pgError('Lecture fullcrea_assets échouée', error);
+  return (data ?? []) as Asset[];
 }
 
 export async function deleteProjectRow(
