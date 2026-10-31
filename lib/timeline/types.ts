@@ -164,6 +164,9 @@ export interface Sequence {
   workArea?: WorkArea | null;
   /** Timeline d'assemblage : reprend toutes les autres, dans l'ordre */
   master?: boolean;
+  /** Table de mixage de Gennn Cut Mac (onglet AUDIO : niveaux et effets par piste).
+   *  Pas encore appliquée par le web : conservée telle quelle à la sauvegarde. */
+  mix?: unknown;
 }
 
 export interface Project {
